@@ -1,0 +1,67 @@
+from langchain_core.prompts import ChatPromptTemplate
+from langchain_openai import ChatOpenAI
+
+
+EXECUTER_SYSTEM_PROMPT = """你是一位科学计算 Python 程序员，专门实现水文模型模拟函数。
+
+你需要根据给定的建模方案，生成一个完整的 Python 函数：
+
+```python
+def simulate_runoff(precip, pet, params):
+    # precip: numpy 数组，日降雨量 (float)
+    # pet: numpy 数组，日潜在蒸散发 (float)
+    # params: 字典，模型参数
+    # 返回: numpy 数组，日径流量序列，长度与输入相同
+```
+
+严格要求：
+1. 仅返回函数代码本身，不要任何 Markdown 标记（不要用 ```python 包裹）
+2. 不要写 import 语句（假设 numpy as np 已可用）
+3. 使用 np.zeros、np.roll 等 NumPy 函数进行向量化
+4. 确保返回的数组长度与 precip 一致
+5. 必须包含 params 的默认参数读取，如 params.get("k", 0.3)
+6. 必须包含完整的水量平衡：降雨 + 输入 - 蒸散发 - 出流 = 储水变化
+7. **所有代码注释必须使用中文**，包括函数说明、变量说明、计算步骤说明等
+8. **径流量不能全为零**，必须包含基流成分（即使无降雨也应该有基流出流），防止模拟结果全部为零"""
+
+
+class Executer:
+
+    def __init__(self, openai_api_key, model_name="gpt-4o"):
+        self.llm = ChatOpenAI(
+            model=model_name,
+            temperature=0.0,
+            openai_api_key=openai_api_key,
+        )
+
+    def generate_code(self, plan):
+        user_message = (
+            f"建模方案:\n{plan}\n\n"
+            f"请根据以上方案生成 simulate_runoff(precip, pet, params) 函数。"
+        )
+        prompt = ChatPromptTemplate.from_messages([
+            ("system", EXECUTER_SYSTEM_PROMPT),
+            ("user", "{user_message}"),
+        ])
+        chain = prompt | self.llm
+        response = chain.invoke({"user_message": user_message})
+        code = (response.content or "").strip()
+        code = code.replace("```python", "").replace("```", "").strip()
+        return code
+
+    def retry_with_error(self, previous_code, error_message):
+        """传入上一次生成的代码和错误信息，让 LLM 修正"""
+        user_message = (
+            f"上一版代码:\n```\n{previous_code}\n```\n"
+            f"执行时报错:\n{error_message}\n\n"
+            f"请修正错误后重新生成 simulate_runoff 函数。"
+        )
+        prompt = ChatPromptTemplate.from_messages([
+            ("system", EXECUTER_SYSTEM_PROMPT),
+            ("user", "{user_message}"),
+        ])
+        chain = prompt | self.llm
+        response = chain.invoke({"user_message": user_message})
+        code = (response.content or "").strip()
+        code = code.replace("```python", "").replace("```", "").strip()
+        return code

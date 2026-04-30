@@ -1,0 +1,6 @@
+gauge_id,name,area,slope,permeability,climate,lat
+01013500,Clearwater River (ID),2300,0.05,high,humid,47.24
+01415000,Tremper Kill (NY),86,0.08,medium,humid,42.15
+02246000,North Fork Black Creek (FL),451,0.02,low,semiarid,30.76
+05056000,Sheyenne River (ND),4862,0.01,low,semiarid,47.77
+13340000,Clearwater River (ID),14269,0.04,high,humid,46.50
