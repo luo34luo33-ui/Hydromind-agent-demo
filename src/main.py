@@ -28,20 +28,51 @@ from simulation.sceua import (
 
 def compute_nse(obs, sim):
     """计算 Nash-Sutcliffe 效率系数"""
+    obs = np.asarray(obs, dtype=np.float64)
+    sim = np.asarray(sim, dtype=np.float64)
+    
+    mask = ~(np.isnan(obs) | np.isnan(sim))
+    obs = obs[mask]
+    sim = sim[mask]
+    
+    if len(obs) == 0:
+        return 0.0
+    
     eps = 1e-10
     numerator = np.sum((sim - obs) ** 2)
     denominator = np.sum((obs - np.mean(obs)) ** 2)
-    if denominator < eps:
+    
+    if denominator < eps or np.isnan(denominator):
         return 0.0
-    return 1.0 - numerator / denominator
+    result = 1.0 - numerator / denominator
+    return 0.0 if np.isnan(result) else result
 
 
 def compute_kge(obs, sim):
     """计算 Kling-Gupta 效率系数"""
+    obs = np.asarray(obs, dtype=np.float64)
+    sim = np.asarray(sim, dtype=np.float64)
+    
+    mask = ~(np.isnan(obs) | np.isnan(sim))
+    obs = obs[mask]
+    sim = sim[mask]
+    
+    if len(obs) == 0:
+        return 0.0
+    
     r = np.corrcoef(obs, sim)[0, 1]
+    if np.isnan(r):
+        r = 0.0
     alpha = np.std(sim) / (np.std(obs) + 1e-10)
     beta = np.mean(sim) / (np.mean(obs) + 1e-10)
-    return 1.0 - np.sqrt((r - 1) ** 2 + (alpha - 1) ** 2 + (beta - 1) ** 2)
+    
+    if np.isnan(alpha):
+        alpha = 1.0
+    if np.isnan(beta):
+        beta = 1.0
+    
+    result = 1.0 - np.sqrt((r - 1) ** 2 + (alpha - 1) ** 2 + (beta - 1) ** 2)
+    return 0.0 if np.isnan(result) else result
 
 
 def build_export_dataframe(data, q_sim, q_corrected):
@@ -383,20 +414,22 @@ with right_col:
         calib_q_obs = calib_data_display["q_obs"].values
         calib_q_sim = q_sim[:len(calib_data_display)]
 
+        dates = pd.to_datetime(data["date"]).dt.strftime('%Y-%m-%d').tolist()
+
         fig = go.Figure()
         fig.add_trace(go.Scatter(
-            x=data["date"], y=q_obs,
+            x=dates, y=q_obs,
             name="观测径流", line=dict(color="black", width=1.5),
         ))
         fig.add_trace(go.Scatter(
-            x=data["date"], y=q_sim,
+            x=dates, y=q_sim,
             name="SCEUA 率定模拟", line=dict(color="#1f77b4", width=1.5),
         ))
 
         if st.session_state["q_corrected"] is not None:
             q_corrected = st.session_state["q_corrected"]
             fig.add_trace(go.Scatter(
-                x=data["date"], y=q_corrected,
+                x=dates, y=q_corrected,
                 name="AI+ML 融合模拟", line=dict(color="#d62728", width=1.5, dash="dot"),
             ))
 
