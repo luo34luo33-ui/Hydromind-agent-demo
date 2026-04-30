@@ -1025,12 +1025,13 @@ python run_calibration.py --input your_data.csv
 '''
     
     timestamp = datetime.now().strftime("%y%m%d_%H%M")
+    py_filename = f"HydroMind-Agent-{timestamp}.py"
     zip_filename = f"HydroMind-Agent-{timestamp}.zip"
     
     buffer = io.BytesIO()
     with zipfile.ZipFile(buffer, 'w', zipfile.ZIP_DEFLATED) as zf:
-        zf.writestr(f"HydroMind-Agent-{timestamp}.py", full_script)
-        zf.writestr("README.md", readme_content)
+        zf.writestr(py_filename, full_script)
+        zf.writestr("README.md", readme_content.replace("HydroMind-Agent-*.py", py_filename))
         zf.writestr("requirements.txt", "numpy>=1.24.0\npandas>=2.0.0\nxgboost>=2.0.0\n")
         
         sample_data = data.copy()
