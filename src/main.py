@@ -595,7 +595,7 @@ def check_and_install_deps():
             except Exception as e:
                 print(f"  ✗ {{pkg}} 安装失败: {{e}}")
                 sys.exit(1)
-        print("依赖安装完成！\n")
+        print("依赖安装完成！")
 
 
 check_and_install_deps()
@@ -697,10 +697,32 @@ def get_bounds(param_names):
 
 
 def compute_nse(obs, sim):
+    obs = np.asarray(obs, dtype=np.float64)
+    sim = np.asarray(sim, dtype=np.float64)
+    mask = ~(np.isnan(obs) | np.isnan(sim))
+    obs, sim = obs[mask], sim[mask]
+    if len(obs) == 0:
+        return 0.0
     eps = 1e-10
     num = np.sum((sim - obs) ** 2)
     den = np.sum((obs - np.mean(obs)) ** 2)
     return 1.0 - num / den if den > eps else 0.0
+
+
+def split_calibration_validation(data, calib_years=25):
+    """按时间划分率定期和验证期"""
+    data = data.sort_values("date").reset_index(drop=True)
+    years = data["date"].dt.year
+    unique_years = sorted(years.unique())
+    n_years = len(unique_years)
+    if n_years < calib_years:
+        n = len(data)
+        split_idx = int(n * 0.75)
+        return data.iloc[:split_idx], data.iloc[split_idx:]
+    calib_year_list = unique_years[:calib_years]
+    calib_data = data[years.isin(calib_year_list)].copy()
+    valid_data = data[~years.isin(calib_year_list)].copy()
+    return calib_data, valid_data
 
 
 class SCEUA:
