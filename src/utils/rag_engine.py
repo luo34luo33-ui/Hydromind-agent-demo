@@ -120,6 +120,27 @@ class CodeTemplateRAG:
         """获取所有可用模型名称"""
         return list(self.templates.keys())
 
+    def retrieve_by_keywords(self, keywords: list[str]) -> str:
+        """根据关键词列表检索代码模板"""
+        if not keywords:
+            return self._get_template_code(self.DEFAULT_TEMPLATE)
+        
+        keywords_lower = [kw.lower() for kw in keywords]
+        
+        best_match = None
+        best_score = 0
+        
+        for model_type, model_keywords in self.KEYWORD_TO_TEMPLATE.items():
+            score = sum(1 for kw in keywords_lower if any(kw in mk.lower() for mk in model_keywords))
+            if score > best_score:
+                best_score = score
+                best_match = model_type
+        
+        if best_match:
+            return self._get_template_code(best_match)
+        
+        return self._get_template_code(self.DEFAULT_TEMPLATE)
+
 
 class HydroKnowledgeBase:
     """

@@ -1,5 +1,37 @@
+from typing import Dict, List, Literal
+from pydantic import BaseModel, Field
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_openai import ChatOpenAI
+
+
+class ModelingPlan(BaseModel):
+    """Planner 结构化输出 - 水文模型构建蓝图"""
+    
+    reasoning: str = Field(
+        description="根据流域属性分析为什么选择以下产汇流机制"
+    )
+    
+    runoff_type: Literal["SCS-CN", "新安江", "HBV", "Tank Model"] = Field(
+        description="选择最适合该流域的产流模型"
+    )
+    
+    flow_routing: Literal["线性水库", "非线性水库", "Nash瞬时单位线", "马斯京根"] = Field(
+        description="选择最适合的汇流或演进机制"
+    )
+    
+    response_type: Literal["快速响应", "中等响应", "慢速响应"] = Field(
+        description="水文响应速度"
+    )
+    
+    param_suggestions: Dict[str, List[float]] = Field(
+        description="建议参数及上下界列表，必须严格遵循 {'参数名': [下界, 上界]} 格式，如 {'k': [0.05, 0.8], 'S0': [0, 200]}"
+    )
+    
+    description: str = Field(description="完整的建模方案描述")
+    
+    template_keywords: List[str] = Field(
+        description="用于检索代码模板的关键词"
+    )
 
 
 PLANNER_SYSTEM_PROMPT = """你是一位资深水文学家，擅长根据流域特征设计概念性水文模型模拟方案。
@@ -28,19 +60,41 @@ class Planner:
             temperature=0.2,
             openai_api_key=openai_api_key,
         )
+        self._structured_llm = None
 
-    def plan(self, attributes, context, user_request=""):
+    def _get_structured_llm(self):
+        if self._structured_llm is None:
+            try:
+                self._structured_llm = self.llm.with_structured_output(ModelingPlan)
+            except Exception:
+                self._structured_llm = None
+        return self._structured_llm
+
+    def plan(self, attributes, context, user_request="", use_structured=False):
         extra = ""
         if user_request:
-            extra = (
-                f"\n用户额外需求（务必遵守）:\n{user_request}\n"
-            )
+            extra = f"\n用户额外需求（务必遵守）:\n{user_request}\n"
+        
         user_message = (
             f"流域特征: {attributes}\n"
             f"参考知识:\n{context}\n"
             f"{extra}"
             f"请根据以上信息，提出产流+汇流模拟方案，并推荐模型参数。"
         )
+
+        if use_structured:
+            try:
+                structured_llm = self._get_structured_llm()
+                if structured_llm:
+                    messages = [
+                        ("system", "你是一位资深水文建模专家，请严格按照要求的结构输出水文建模蓝图。"),
+                        ("human", user_message)
+                    ]
+                    result = structured_llm.invoke(messages)
+                    return result
+            except Exception as e:
+                print(f"Planner 结构化输出失败，退回普通模式: {e}")
+
         prompt = ChatPromptTemplate.from_messages([
             ("system", PLANNER_SYSTEM_PROMPT),
             ("user", "{user_message}"),

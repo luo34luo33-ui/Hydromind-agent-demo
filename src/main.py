@@ -17,7 +17,7 @@ from utils.data_loader import (
 )
 from utils.rag_engine import HydroKnowledgeBase, CodeTemplateRAG
 from agents.graph import run_agent_loop
-from agents.planner import Planner
+from agents.planner import Planner, ModelingPlan
 from agents.executer import Executer
 from agents.validator import CodeValidator, execute_with_fallback, FALLBACK_CODE
 from simulation.ml_correction import ResidualCorrector
@@ -238,13 +238,21 @@ with left_col:
                 rag_query = "水文模型 产流 汇流"
             context = kb.retrieve(rag_query, k=5)
             planner = Planner(api_key, selected_model)
-            plan_text = planner.plan(
-                str(basin_info), context, st.session_state.get("user_request", "")
+            
+            planner_use_structured = selected_model in ["gpt-4o", "gpt-4o-mini"]
+            plan_obj = planner.plan(
+                str(basin_info), context, st.session_state.get("user_request", ""),
+                use_structured=planner_use_structured
             )
-            st.session_state["plan"] = plan_text
-            progress.write("✅ 方案生成完成")
+            
+            if planner_use_structured and isinstance(plan_obj, ModelingPlan):
+                st.session_state["plan"] = plan_obj
+                progress.write(f"✅ 方案生成完成 (结构化: {plan_obj.runoff_type} + {plan_obj.flow_routing})")
+            else:
+                st.session_state["plan"] = plan_obj
+                progress.write("✅ 方案生成完成")
         else:
-            plan_text = st.session_state["plan"]
+            plan_obj = st.session_state["plan"]
             progress.write("📋 使用已缓存的建模方案")
 
         # ===== Phase 2: Code Generation & Validation (LangGraph) =====
@@ -253,8 +261,16 @@ with left_col:
         if need_codegen:
             progress.write("📚 正在检索代码模板...")
             code_rag = CodeTemplateRAG()
-            plan_str = plan_text if isinstance(plan_text, str) else str(plan_text)
-            code_template = code_rag.retrieve_by_plan(plan_str)
+            
+            if isinstance(plan_obj, ModelingPlan):
+                plan_str = plan_obj.description
+                param_constraints = plan_obj.param_suggestions
+                code_template = code_rag.retrieve_by_keywords(plan_obj.template_keywords)
+            else:
+                plan_str = str(plan_obj)
+                param_constraints = None
+                code_template = code_rag.retrieve_by_plan(plan_str)
+            
             progress.write(f"✅ 已匹配代码模板")
 
             test_params = {"k": 0.40, "S0": 100.0, "CN": 75.0}
@@ -268,17 +284,21 @@ with left_col:
             
             use_structured = selected_model in ["gpt-4o", "gpt-4o-mini"]
             
+            generated_params_config = None
+            
             if use_structured:
                 executer = Executer(api_key, selected_model)
-                code = None
+                code_result = {"code": None, "parameters_config": {}}
                 error_msg = ""
                 for attempt in range(3):
                     if attempt == 0:
                         progress.write(f"💻 Executer: 正在生成代码 (结构化输出)...")
-                        code = executer.generate_code(plan_str, code_template=code_template, use_structured=True)
+                        code_result = executer.generate_code(plan_str, code_template=code_template, param_constraints=param_constraints, use_structured=True)
                     else:
                         progress.write(f"🔁 重试: 将错误反馈给 LLM...")
-                        code = executer.retry_with_error(code, error_msg, use_structured=True)
+                        code_result = executer.retry_with_error(code_result, error_msg, use_structured=True)
+                    
+                    code = code_result.get("code", "") if isinstance(code_result, dict) else code_result
                     
                     syntax_ok, syntax_err = CodeValidator.validate_syntax(code)
                     if not syntax_ok:
@@ -289,6 +309,7 @@ with left_col:
                     exec_ok, _, exec_err = CodeValidator.execute_safe(code, test_inputs)
                     if exec_ok:
                         st.session_state["generated_code"] = code
+                        generated_params_config = code_result.get("parameters_config", {})
                         st.session_state["used_fallback"] = False
                         progress.write("✅ 代码验证通过 (结构化输出)")
                         break
@@ -320,6 +341,7 @@ with left_col:
                     st.session_state["used_fallback"] = True
         else:
             progress.write("💻 使用已缓存的模型代码")
+            generated_params_config = st.session_state.get("generated_params_config", {})
 
         # ===== Phase 3: SCE-UA Calibration =====
         code = st.session_state["generated_code"]
@@ -329,11 +351,16 @@ with left_col:
         pet_vals = calib_data["pet"].values
         q_obs_vals = calib_data["q_obs"].values
 
-        param_names = extract_params_from_code(code)
-        if not param_names:
-            param_names = ["k", "S0"]
-
-        bounds_list = get_bounds_for_params(param_names)
+        if generated_params_config:
+            param_names = list(generated_params_config.keys())
+            bounds_list = [generated_params_config[k] for k in param_names]
+            st.session_state["generated_params_config"] = generated_params_config
+        else:
+            param_names = extract_params_from_code(code)
+            if not param_names:
+                param_names = ["k", "S0"]
+            bounds_list = get_bounds_for_params(param_names)
+        
         n_params = len(param_names)
         progress.write(f"🎯 SCE-UA 率定: {n_params} 个参数 ({', '.join(param_names)})")
 

@@ -1,4 +1,4 @@
-from typing import Optional
+from typing import Optional, Dict, List
 from pydantic import BaseModel, Field
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_openai import ChatOpenAI
@@ -6,8 +6,11 @@ from langchain_openai import ChatOpenAI
 
 class HydroModelCode(BaseModel):
     """结构化输出的模型代码"""
-    reasoning: str = Field(description="思考这段代码该怎么写，参数怎么设")
-    simulate_function: str = Field(description="纯净的 Python 函数代码，只包含 def simulate_runoff(...)，不含 import")
+    reasoning: str = Field(description="代码设计与参数使用的思考过程")
+    simulate_function: str = Field(description="纯净的 simulate_runoff 函数代码，不含 import")
+    parameters_config: Dict[str, List[float]] = Field(
+        description="代码中实际使用的参数及其寻优上下界，格式为 {'参数名': [下界, 上界]}，如 {'k': [0.05, 0.8], 'S0': [0, 200]}"
+    )
 
 
 EXECUTER_SYSTEM_PROMPT = """你是一位科学计算 Python 程序员，专门实现水文模型模拟函数。
@@ -53,7 +56,7 @@ class Executer:
                 self._structured_llm = None
         return self._structured_llm
     
-    def generate_code(self, plan, code_template="", use_structured=False):
+    def generate_code(self, plan, code_template="", param_constraints=None, use_structured=False):
         plan_str = plan if isinstance(plan, str) else str(plan)
         
         template_context = ""
@@ -65,8 +68,18 @@ class Executer:
 
 """
         
+        param_context = ""
+        if param_constraints:
+            param_list = ", ".join([f"{k}: {v[0]}-{v[1]}" for k, v in param_constraints.items()])
+            param_context = f"""
+约束参数（必须使用这些参数名，参数范围仅作参考）：
+- 参数列表: {param_list}
+- 函数内必须使用 params.get("参数名") 读取这些参数
+"""
+        
         user_message = (
             f"建模方案:\n{plan_str}\n\n"
+            f"{param_context}"
             f"{template_context}"
             f"请根据以上方案生成 simulate_runoff(precip, pet, params) 函数。"
         )
@@ -77,9 +90,13 @@ class Executer:
                 try:
                     result = structured_llm.invoke(user_message)
                     if hasattr(result, 'simulate_function'):
-                        return result.simulate_function
-                except Exception:
-                    pass
+                        return {
+                            "code": result.simulate_function,
+                            "parameters_config": result.parameters_config,
+                            "reasoning": result.reasoning
+                        }
+                except Exception as e:
+                    print(f"Executer 结构化输出失败: {e}")
         
         prompt = ChatPromptTemplate.from_messages([
             ("system", EXECUTER_SYSTEM_PROMPT),
@@ -93,12 +110,24 @@ class Executer:
             content = content[0].get("text", "") if content else ""
         code = str(content).strip()
         code = code.replace("```python", "").replace("```", "").strip()
-        return code
+        
+        return {"code": code, "parameters_config": {}, "reasoning": ""}
 
     def retry_with_error(self, previous_code, error_message, use_structured=False):
         """传入上一次生成的代码和错误信息，让 LLM 修正"""
         user_message = (
             f"上一版代码:\n```\n{previous_code}\n```\n"
+            f"执行时报错:\n{error_message}\n\n"
+            f"请修正错误后重新生成 simulate_runoff 函数。"
+        )
+        
+        if use_structured and isinstance(previous_code, dict):
+            previous_code_str = previous_code.get("code", "")
+        else:
+            previous_code_str = previous_code if isinstance(previous_code, str) else str(previous_code)
+        
+        user_message = (
+            f"上一版代码:\n```\n{previous_code_str}\n```\n"
             f"执行时报错:\n{error_message}\n\n"
             f"请修正错误后重新生成 simulate_runoff 函数。"
         )
@@ -109,7 +138,11 @@ class Executer:
                 try:
                     result = structured_llm.invoke(user_message)
                     if hasattr(result, 'simulate_function'):
-                        return result.simulate_function
+                        return {
+                            "code": result.simulate_function,
+                            "parameters_config": result.parameters_config,
+                            "reasoning": result.reasoning
+                        }
                 except Exception:
                     pass
         
@@ -125,4 +158,5 @@ class Executer:
             content = content[0].get("text", "") if content else ""
         code = str(content).strip()
         code = code.replace("```python", "").replace("```", "").strip()
-        return code
+        
+        return {"code": code, "parameters_config": {}, "reasoning": ""}
