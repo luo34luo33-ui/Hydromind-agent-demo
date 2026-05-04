@@ -1,6 +1,95 @@
 # Hydromind 更新说明
 
-## v1.2_develop (最新版本)
+## v1.3_develop (最新版本)
+
+**发布日期**: 2025-05-04
+
+### 核心升级：Prompt 修正 + Python Registry + 精确 ID 寻址
+
+#### Phase 3: Executer Prompt 修正
+- 修改 Prompt 措辞，添加"核心物理机制约束"
+- 明确告诉 LLM **必须绝对保留水量平衡（Mass Balance）机制**
+- 添加"接口适配约束"：仅修改参数读取方式和输入输出接口
+- 移除危险的暗示"不要完全照抄"
+
+**修改后的 Prompt**:
+```
+参考基准代码模板：
+{code_template}
+
+【开发指令】：
+1. 核心物理机制约束：必须绝对保留上述模板中的产流/汇流核心逻辑和水量平衡（Mass Balance）机制，切勿随意修改物理运算步骤。
+2. 接口适配约束：请在此模板基础上，根据 Planner 提供的参数建议（{param_list_str}），仅修改参数读取方式（如 params.get(...)）和输入输出接口。
+```
+
+#### Phase 2: Python Registry (使用 inspect)
+- 新建 `src/templates/registry.py`
+- 使用 `inspect.getsource()` 动态获取函数源码
+- 包含 5 个模板函数：`_linear_reservoir_simulate`, `_tank_model_simulate`, `_scs_cn_simulate`, `_xaj_simulate`, `_hbv_simulate`
+- **删除** 脆弱的 Markdown 正则解析
+
+**模板注册表**:
+```python
+class ModelTemplate:
+    id: str
+    name: str
+    keywords: List[str]
+    func: callable  # 传入真实函数对象
+    params: Dict[str, List[float]]
+
+TEMPLATE_REGISTRY = {
+    "linear_reservoir": ModelTemplate(id="linear_reservoir", ...),
+    "tank_model": ModelTemplate(id="tank_model", ...),
+    "scs_cn": ModelTemplate(id="scs_cn", ...),
+    "xaj": ModelTemplate(id="xaj", ...),
+    "hbv": ModelTemplate(id="hbv", ...),
+}
+```
+
+#### Phase 1: 精确 ID 寻址 (O(1) 匹配)
+- Planner 的 `ModelingPlan` 中 `template_keywords` → `template_ids`
+- 使用 `Literal` 限制可选值，锁死模板 ID
+- `CodeTemplateRAG.get_templates_by_ids()` 实现 O(1) 寻址
+
+**修改后的 Schema**:
+```python
+class ModelingPlan(BaseModel):
+    # ...
+    template_ids: List[Literal["linear_reservoir", "tank_model", "scs_cn", "xaj", "hbv"]] = Field(
+        description="建议 Executer 提取的代码模板 ID"
+    )
+```
+
+#### 数据流对比
+
+| 版本 | 检索方式 | 匹配逻辑 |
+|------|----------|----------|
+| v1.2 | `retrieve_by_keywords()` | 关键词匹配（概率游戏） |
+| v1.3 | `get_templates_by_ids()` | 精确 ID 寻址（O(1)） |
+
+#### 新增文件
+| 文件 | 说明 |
+|------|------|
+| `src/templates/__init__.py` | 模板包初始化 |
+| `src/templates/registry.py` | Python Registry 注册表 |
+
+#### 修改文件
+| 文件 | 改动 |
+|------|------|
+| `src/agents/executer.py` | Prompt 措辞修正，添加物理约束 |
+| `src/agents/planner.py` | template_keywords → template_ids |
+| `src/utils/rag_engine.py` | 从 Registry 加载，添加 get_templates_by_ids() |
+| `src/main.py` | 调用 get_templates_by_ids() |
+
+#### 收益
+- **零正则**：彻底告别 Markdown 解析异常
+- **O(1) 匹配**：100% 命中率，无概率波动
+- **物理锁定**：减少 LLM 修改物理公式的风险
+- **IDE 支持**：模板代码享受语法高亮和格式化
+
+---
+
+## v1.2_develop
 
 **发布日期**: 2025-05-04
 
@@ -125,7 +214,8 @@ SCE-UA (无需正则提取，直接使用 parameters_config)
 |------|----------|------|
 | v1.0 | 基础 Agent 流程 (Planner → Executer → Validator → SCE-UA) | 已发布 |
 | v1.1 | 代码模板检索 + LangGraph 重试机制 | 已发布 |
-| v1.2 | Planner/Executer 双结构化 + 零正则提取 | 开发中 |
+| v1.2 | Planner/Executer 双结构化 + 零正则提取 | 已发布 |
+| v1.3 | Prompt 修正 + Python Registry + 精确 ID 寻址 | 开发中 |
 
 ---
 
@@ -141,7 +231,8 @@ SCE-UA (无需正则提取，直接使用 parameters_config)
 
 ## 后续规划
 
-- [ ] v1.2 集成 LangGraph 状态机到 main.py
+- [ ] v1.3 集成 LangGraph 状态机到 main.py
 - [ ] 添加更多代码模板（SWAT、水动力模型）
 - [ ] 支持自定义参数约束
 - [ ] 添加多模型对比功能
+- [ ] 模板单元测试验证
