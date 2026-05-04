@@ -5,18 +5,24 @@ from langchain_openai import ChatOpenAI
 
 
 class ModelingPlan(BaseModel):
-    """Planner 结构化输出 - 水文模型构建蓝图"""
+    """Planner 结构化输出 - 水文模型构建蓝图 (v1.3.1 模块化版本)"""
     
     reasoning: str = Field(
-        description="根据流域属性分析为什么选择以下产汇流机制"
+        description="根据流域属性分析为什么选择以下产流和汇流模块组合"
     )
     
-    runoff_type: Literal["SCS-CN", "新安江", "HBV", "Tank Model"] = Field(
-        description="选择最适合该流域的产流模型"
+    # 产流模块选择
+    runoff_module_id: Literal[
+        "scs_runoff", "xaj_runoff", "tank_runoff", "hbv_runoff", "simple_runoff"
+    ] = Field(
+        description="选择最适合该流域的产流模块: scs_runoff=SCS-CN产流, xaj_runoff=新安江蓄满产流, tank_runoff=Tank产流, hbv_runoff=HBV土壤水分, simple_runoff=简单产流"
     )
     
-    flow_routing: Literal["线性水库", "非线性水库", "Nash瞬时单位线", "马斯京根"] = Field(
-        description="选择最适合的汇流或演进机制"
+    # 汇流模块选择
+    routing_module_id: Literal[
+        "linear_routing", "nonlinear_routing", "nash_routing", "direct_routing"
+    ] = Field(
+        description="选择最适合的汇流模块: linear_routing=线性水库, nonlinear_routing=非线性水库, nash_routing=Nash单位线, direct_routing=直接汇流"
     )
     
     response_type: Literal["快速响应", "中等响应", "慢速响应"] = Field(
@@ -24,14 +30,10 @@ class ModelingPlan(BaseModel):
     )
     
     param_suggestions: Dict[str, List[float]] = Field(
-        description="建议参数及上下界列表，必须严格遵循 {'参数名': [下界, 上界]} 格式，如 {'k': [0.05, 0.8], 'S0': [0, 200]}"
+        description="建议参数及上下界列表，必须严格遵循 {'参数名_后缀': [下界, 上界]} 格式。产流参数用 _runoff 后缀，汇流参数用 _routing 后缀，如 {'k_routing': [0.05, 0.8], 'CN_runoff': [30, 95]}"
     )
     
     description: str = Field(description="完整的建模方案描述")
-    
-    template_ids: List[Literal["linear_reservoir", "tank_model", "scs_cn", "xaj", "hbv"]] = Field(
-        description="建议 Executer 提取的代码模板 ID"
-    )
 
 
 PLANNER_SYSTEM_PROMPT = """你是一位资深水文学家，擅长根据流域特征设计概念性水文模型模拟方案。

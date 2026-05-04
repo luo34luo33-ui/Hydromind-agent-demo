@@ -25,6 +25,7 @@ from simulation.sceua import (
     SCEUA, extract_params_from_code, get_bounds_for_params,
     build_calibration_objective,
 )
+from templates.composer import get_composer, compose_model
 
 
 def compute_nse(obs, sim):
@@ -259,19 +260,41 @@ with left_col:
         need_codegen = (st.session_state["generated_code"] is None)
 
         if need_codegen:
-            progress.write("📚 正在检索代码模板...")
-            code_rag = CodeTemplateRAG()
-            
-            if isinstance(plan_obj, ModelingPlan):
-                plan_str = plan_obj.description
-                param_constraints = plan_obj.param_suggestions
-                code_template = code_rag.get_templates_by_ids(plan_obj.template_ids)
+            if isinstance(plan_obj, ModelingPlan) and hasattr(plan_obj, 'runoff_module_id'):
+                progress.write(f"⚙️ 正在组合模块化模型...")
+                progress.write(f"   产流模块: {plan_obj.runoff_module_id}")
+                progress.write(f"   汇流模块: {plan_obj.routing_module_id}")
+                
+                try:
+                    composer = get_composer()
+                    model_info = composer.compose(
+                        plan_obj.runoff_module_id,
+                        plan_obj.routing_module_id
+                    )
+                    generated_code = model_info["code"]
+                    generated_params_config = model_info["params"]
+                    st.session_state["generated_code"] = generated_code
+                    st.session_state["used_fallback"] = False
+                    progress.write("✅ 模块化模型生成完成")
+                    
+                    test_inputs = {
+                        "precip": data["precip"].values,
+                        "pet": data["pet"].values,
+                        "params": generated_params_config,
+                    }
+                except Exception as e:
+                    progress.write(f"⚠️ 模块组合失败: {e}")
+                    progress.write("🛟 尝试使用旧版模板系统...")
+                    need_codegen = False
             else:
-                plan_str = str(plan_obj)
-                param_constraints = None
-                code_template = code_rag.retrieve_by_plan(plan_str)
-            
-            progress.write(f"✅ 已匹配代码模板")
+                progress.write("📚 正在检索代码模板 (兼容模式)...")
+                code_rag = CodeTemplateRAG()
+                
+                plan_str = str(plan_obj) if not isinstance(plan_obj, ModelingPlan) else plan_obj.description
+                param_constraints = None if not isinstance(plan_obj, ModelingPlan) else plan_obj.param_suggestions
+                code_template = code_rag.retrieve_by_plan(plan_str) if not hasattr(plan_obj, 'runoff_module_id') else ""
+                
+                progress.write(f"✅ 已匹配代码模板")
 
             test_params = {"k": 0.40, "S0": 100.0, "CN": 75.0}
             test_inputs = {
