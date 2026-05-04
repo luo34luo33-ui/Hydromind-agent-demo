@@ -9,7 +9,7 @@
 3. 只提取计算核心：inspect.getsource 只提取 compute/route 方法
 """
 import inspect
-from typing import Dict, Any, Tuple, Optional
+from typing import Dict, Any, Tuple, Optional, List
 from .modules import GLOBAL_REGISTRY, RunoffModule, RoutingModule
 
 
