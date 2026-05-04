@@ -61,11 +61,14 @@ class Executer:
         
         template_context = ""
         if code_template:
+            param_list_str = ", ".join([f"{k}: {v[0]}-{v[1]}" for k, v in param_constraints.items()]) if param_constraints else "无"
             template_context = f"""
-参考代码模板（请在此基础上根据建模方案修改，不要完全照抄）：
-
+参考基准代码模板：
 {code_template}
 
+【开发指令】：
+1. 核心物理机制约束：必须绝对保留上述模板中的产流/汇流核心逻辑和水量平衡（Mass Balance）机制，切勿随意修改物理运算步骤。
+2. 接口适配约束：请在此模板基础上，根据 Planner 提供的参数建议（{param_list_str}），仅修改参数读取方式（如 params.get(...)）和输入输出接口，以满足主函数的调用需求。
 """
         
         param_context = ""
@@ -129,7 +132,8 @@ class Executer:
         user_message = (
             f"上一版代码:\n```\n{previous_code_str}\n```\n"
             f"执行时报错:\n{error_message}\n\n"
-            f"请修正错误后重新生成 simulate_runoff 函数。"
+            f"请修正错误后重新生成 simulate_runoff 函数。\n\n"
+            f"【重要约束】：修正时必须保留原始代码中的物理机制和水量平衡逻辑，仅修复语法错误或逻辑错误，不要随意修改物理公式。"
         )
         
         if use_structured:

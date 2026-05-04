@@ -265,7 +265,7 @@ with left_col:
             if isinstance(plan_obj, ModelingPlan):
                 plan_str = plan_obj.description
                 param_constraints = plan_obj.param_suggestions
-                code_template = code_rag.retrieve_by_keywords(plan_obj.template_keywords)
+                code_template = code_rag.get_templates_by_ids(plan_obj.template_ids)
             else:
                 plan_str = str(plan_obj)
                 param_constraints = None

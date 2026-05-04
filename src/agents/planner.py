@@ -29,8 +29,8 @@ class ModelingPlan(BaseModel):
     
     description: str = Field(description="完整的建模方案描述")
     
-    template_keywords: List[str] = Field(
-        description="用于检索代码模板的关键词"
+    template_ids: List[Literal["linear_reservoir", "tank_model", "scs_cn", "xaj", "hbv"]] = Field(
+        description="建议 Executer 提取的代码模板 ID"
     )
 
 
