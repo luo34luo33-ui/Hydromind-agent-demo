@@ -248,7 +248,7 @@ with left_col:
             
             if planner_use_structured and isinstance(plan_obj, ModelingPlan):
                 st.session_state["plan"] = plan_obj
-                progress.write(f"✅ 方案生成完成 (结构化: {plan_obj.runoff_type} + {plan_obj.flow_routing})")
+                progress.write(f"✅ 方案生成完成 (结构化: {plan_obj.runoff_module_id} + {plan_obj.routing_module_id})")
             else:
                 st.session_state["plan"] = plan_obj
                 progress.write("✅ 方案生成完成")
