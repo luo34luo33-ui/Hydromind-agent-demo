@@ -1,6 +1,134 @@
 # Hydromind 更新说明
 
-## v1.3_develop (最新版本)
+## v1.3.1_develop (最新版本)
+
+**发布日期**: 2025-05-04
+
+### 核心升级：模块化 Code Template 体系
+
+从"完整模型"升级为"产流/汇流模块组合"架构，实现乐高式构建。
+
+#### Phase 1: 模块接口设计 (modules.py)
+- 定义 `RunoffModule` 和 `RoutingModule` 抽象基类
+- **防雷设计**: `state_init_mapping` 状态初始化映射
+- **防雷设计**: 参数后缀约束（`_runoff` / `_routing`）
+
+```python
+class RunoffModule(ABC):
+    @property
+    def state_init_mapping(self) -> Dict[str, str]:
+        """例如: {"soil_storage": "params.get('S0_runoff', 0.0)"}"""
+        pass
+    
+    @property
+    def params(self) -> Dict[str, List[float]]:
+        """参数必须以 _runoff 结尾"""
+        pass
+```
+
+#### Phase 2: 产流模块实现 (runoff_modules.py)
+
+| 模块 ID | 名称 | 参数后缀 | state_keys |
+|--------|------|----------|------------|
+| `scs_runoff` | SCS-CN 产流 | `CN_runoff`, `Smax_runoff` | soil_storage |
+| `xaj_runoff` | 新安江蓄满产流 | `WM_runoff`, `B_runoff` | W, S |
+| `tank_runoff` | Tank 产流 | `k1_runoff`, `k2_runoff` | S1, S2, S3 |
+| `hbv_runoff` | HBV 土壤水分 | `FC_runoff`, `BETA_runoff` | soil |
+| `simple_runoff` | 简单产流 | `k_runoff` | storage |
+
+#### Phase 3: 汇流模块实现 (routing_modules.py)
+
+| 模块 ID | 名称 | 参数后缀 | state_keys |
+|--------|------|----------|------------|
+| `linear_routing` | 线性水库 | `k_routing`, `S0_routing` | routing_storage |
+| `nonlinear_routing` | 非线性水库 | `k_routing`, `beta_routing` | routing_storage |
+| `nash_routing` | Nash 单位线 | `k_routing`, `n_routing` | nash_1, nash_2, nash_3 |
+| `direct_routing` | 直接汇流 | (无) | (无) |
+
+#### Phase 4: 模型组合器 (composer.py)
+
+**防雷设计实现**:
+
+1. **参数命名空间隔离**:
+```python
+# 产流参数
+params = {"CN_runoff": [30, 95], "Smax_runoff": [0, 500]}
+# 汇流参数  
+params = {"k_routing": [0.05, 0.8], "S0_routing": [0, 200]}
+# 合并后无冲突
+```
+
+2. **状态初始化映射**:
+```python
+# 使用模块的 state_init_mapping
+initial_state = {
+    "soil_storage": "params.get('S0_runoff', 0.0)",
+    "routing_storage": "params.get('S0_routing', 50.0)"
+}
+```
+
+3. **只提取计算核心**:
+```python
+# 只提取 compute/route 方法，丢弃类的外壳
+def _get_module_method_code(self, module):
+    if hasattr(module, 'compute'):
+        return inspect.getsource(module.compute)
+```
+
+#### Phase 5-6: Planner + main.py 集成
+
+**Planner Schema 更新**:
+```python
+class ModelingPlan(BaseModel):
+    runoff_module_id: Literal[
+        "scs_runoff", "xaj_runoff", "tank_runoff", "hbv_runoff", "simple_runoff"
+    ]
+    routing_module_id: Literal[
+        "linear_routing", "nonlinear_routing", "nash_routing", "direct_routing"
+    ]
+```
+
+**main.py 双模式支持**:
+- 新模式：`ModelComposer.compose(runoff_id, routing_id)`
+- 兼容模式：旧版模板系统
+
+#### 数据流
+
+```
+Planner:
+  - runoff_module_id: "scs_runoff"
+  - routing_module_id: "linear_routing"
+         ↓
+ModelComposer.compose():
+  1. 获取模块代码 (inspect.getsource 只提取方法)
+  2. 合并参数 (自动加 _runoff / _routing 后缀)
+  3. 生成状态初始化 (使用 state_init_mapping)
+  4. 生成完整代码 (Blueprint + 模块代码)
+         ↓
+simulate_runoff(precip, pet, params)
+         ↓
+SCE-UA 率定 (使用带后缀的参数)
+```
+
+#### 新增文件
+
+| 文件 | 说明 |
+|------|------|
+| `src/templates/modules.py` | 接口定义 + 防雷设计 |
+| `src/templates/runoff_modules.py` | 5个产流模块 |
+| `src/templates/routing_modules.py` | 4个汇流模块 |
+| `src/templates/composer.py` | 组合器 + 蓝图 |
+
+#### 收益
+
+- **乐高式组合**: 产流模块 × 汇流模块 = 完整模型
+- **状态隔离**: `state` 字典管理，避免变量混乱
+- **零参数冲突**: 自动后缀隔离
+- **水量守恒**: 模块内部守恒，组合后依然守恒
+
+---
+
+## v1.3_develop
 
 **发布日期**: 2025-05-04
 
@@ -212,10 +340,11 @@ SCE-UA (无需正则提取，直接使用 parameters_config)
 
 | 版本 | 核心特性 | 状态 |
 |------|----------|------|
-| v1.0 | 基础 Agent 流程 (Planner → Executer → Validator → SCE-UA) | 已发布 |
-| v1.1 | 代码模板检索 + LangGraph 重试机制 | 已发布 |
-| v1.2 | Planner/Executer 双结构化 + 零正则提取 | 已发布 |
-| v1.3 | Prompt 修正 + Python Registry + 精确 ID 寻址 | 开发中 |
+| v1.0 | 基础 Agent 流程 | 已发布 |
+| v1.1 | 代码模板检索 + LangGraph | 已发布 |
+| v1.2 | Planner/Executer 双结构化 + 零正则 | 已发布 |
+| v1.3 | Prompt 修正 + Python Registry + 精确 ID | 已发布 |
+| v1.3.1 | 模块化 Code Template (产流/汇流模块组合) | 开发中 |
 
 ---
 
