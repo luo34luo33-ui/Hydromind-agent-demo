@@ -1,5 +1,13 @@
+from typing import Optional
+from pydantic import BaseModel, Field
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_openai import ChatOpenAI
+
+
+class HydroModelCode(BaseModel):
+    """结构化输出的模型代码"""
+    reasoning: str = Field(description="思考这段代码该怎么写，参数怎么设")
+    simulate_function: str = Field(description="纯净的 Python 函数代码，只包含 def simulate_runoff(...)，不含 import")
 
 
 EXECUTER_SYSTEM_PROMPT = """你是一位科学计算 Python 程序员，专门实现水文模型模拟函数。
@@ -22,7 +30,8 @@ def simulate_runoff(precip, pet, params):
 5. 必须包含 params 的默认参数读取，如 params.get("k", 0.3)
 6. 必须包含完整的水量平衡：降雨 + 输入 - 蒸散发 - 出流 = 储水变化
 7. **所有代码注释必须使用中文**，包括函数说明、变量说明、计算步骤说明等
-8. **径流量不能全为零**，必须包含基流成分（即使无降雨也应该有基流出流），防止模拟结果全部为零"""
+8. **径流量不能全为零**，必须包含基流成分（即使无降雨也应该有基流出流），防止模拟结果全部为零
+9. **如需加速计算，可使用 @jit(nopython=True) 装饰器"""
 
 
 class Executer:
@@ -33,35 +42,87 @@ class Executer:
             temperature=0.0,
             openai_api_key=openai_api_key,
         )
+        self._structured_llm = None
+        
+    def _get_structured_llm(self):
+        """获取结构化输出的 LLM"""
+        if self._structured_llm is None:
+            try:
+                self._structured_llm = self.llm.with_structured_output(HydroModelCode)
+            except Exception:
+                self._structured_llm = None
+        return self._structured_llm
+    
+    def generate_code(self, plan, code_template="", use_structured=False):
+        plan_str = plan if isinstance(plan, str) else str(plan)
+        
+        template_context = ""
+        if code_template:
+            template_context = f"""
+参考代码模板（请在此基础上根据建模方案修改，不要完全照抄）：
 
-    def generate_code(self, plan):
+{code_template}
+
+"""
+        
         user_message = (
-            f"建模方案:\n{plan}\n\n"
+            f"建模方案:\n{plan_str}\n\n"
+            f"{template_context}"
             f"请根据以上方案生成 simulate_runoff(precip, pet, params) 函数。"
         )
+        
+        if use_structured:
+            structured_llm = self._get_structured_llm()
+            if structured_llm:
+                try:
+                    result = structured_llm.invoke(user_message)
+                    if hasattr(result, 'simulate_function'):
+                        return result.simulate_function
+                except Exception:
+                    pass
+        
         prompt = ChatPromptTemplate.from_messages([
             ("system", EXECUTER_SYSTEM_PROMPT),
             ("user", "{user_message}"),
         ])
         chain = prompt | self.llm
         response = chain.invoke({"user_message": user_message})
-        code = (response.content or "").strip()
+        
+        content = response.content
+        if isinstance(content, list):
+            content = content[0].get("text", "") if content else ""
+        code = str(content).strip()
         code = code.replace("```python", "").replace("```", "").strip()
         return code
 
-    def retry_with_error(self, previous_code, error_message):
+    def retry_with_error(self, previous_code, error_message, use_structured=False):
         """传入上一次生成的代码和错误信息，让 LLM 修正"""
         user_message = (
             f"上一版代码:\n```\n{previous_code}\n```\n"
             f"执行时报错:\n{error_message}\n\n"
             f"请修正错误后重新生成 simulate_runoff 函数。"
         )
+        
+        if use_structured:
+            structured_llm = self._get_structured_llm()
+            if structured_llm:
+                try:
+                    result = structured_llm.invoke(user_message)
+                    if hasattr(result, 'simulate_function'):
+                        return result.simulate_function
+                except Exception:
+                    pass
+        
         prompt = ChatPromptTemplate.from_messages([
             ("system", EXECUTER_SYSTEM_PROMPT),
             ("user", "{user_message}"),
         ])
         chain = prompt | self.llm
         response = chain.invoke({"user_message": user_message})
-        code = (response.content or "").strip()
+        
+        content = response.content
+        if isinstance(content, list):
+            content = content[0].get("text", "") if content else ""
+        code = str(content).strip()
         code = code.replace("```python", "").replace("```", "").strip()
         return code

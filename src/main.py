@@ -15,7 +15,8 @@ from utils.data_loader import (
     get_basin_info_dict,
     get_available_basin_ids,
 )
-from utils.rag_engine import HydroKnowledgeBase
+from utils.rag_engine import HydroKnowledgeBase, CodeTemplateRAG
+from agents.graph import run_agent_loop
 from agents.planner import Planner
 from agents.executer import Executer
 from agents.validator import CodeValidator, execute_with_fallback, FALLBACK_CODE
@@ -230,9 +231,12 @@ with left_col:
         if st.session_state["plan"] is None:
             progress.write("📋 Planner: 正在检索知识库并制定方案...")
             kb = HydroKnowledgeBase()
-            context = kb.retrieve(
-                f"气候{basin_info.get('climate')} 面积{basin_info.get('area')} 坡度{basin_info.get('slope')}"
-            )
+            user_request = st.session_state.get("user_request", "")
+            if user_request.strip():
+                rag_query = user_request
+            else:
+                rag_query = "水文模型 产流 汇流"
+            context = kb.retrieve(rag_query, k=5)
             planner = Planner(api_key, selected_model)
             plan_text = planner.plan(
                 str(basin_info), context, st.session_state.get("user_request", "")
@@ -243,49 +247,77 @@ with left_col:
             plan_text = st.session_state["plan"]
             progress.write("📋 使用已缓存的建模方案")
 
-        # ===== Phase 2: Code Generation & Validation =====
+        # ===== Phase 2: Code Generation & Validation (LangGraph) =====
         need_codegen = (st.session_state["generated_code"] is None)
 
         if need_codegen:
-            MAX_RETRIES = 2
-            code = None
-            error_msg = ""
+            progress.write("📚 正在检索代码模板...")
+            code_rag = CodeTemplateRAG()
+            plan_str = plan_text if isinstance(plan_text, str) else str(plan_text)
+            code_template = code_rag.retrieve_by_plan(plan_str)
+            progress.write(f"✅ 已匹配代码模板")
+
             test_params = {"k": 0.40, "S0": 100.0, "CN": 75.0}
             test_inputs = {
                 "precip": data["precip"].values,
                 "pet": data["pet"].values,
                 "params": test_params,
             }
-            executer = Executer(api_key, selected_model)
 
-            for attempt in range(MAX_RETRIES + 1):
-                if attempt == 0:
-                    progress.write(f"💻 Executer: 正在生成代码 (第 {attempt + 1} 次尝试)...")
-                    code = executer.generate_code(plan_text)
-                else:
-                    progress.write(f"🔁 重试: 将错误反馈给 LLM (第 {attempt + 1} 次尝试)...")
-                    code = executer.retry_with_error(code, error_msg)
-
-                syntax_ok, syntax_err = CodeValidator.validate_syntax(code)
-                if not syntax_ok:
-                    error_msg = f"语法错误: {syntax_err}"
-                    progress.write(f"⚠️ {error_msg}")
-                    continue
-
-                exec_ok, _, exec_err = CodeValidator.execute_safe(code, test_inputs)
-                if exec_ok:
-                    st.session_state["generated_code"] = code
-                    st.session_state["used_fallback"] = False
-                    progress.write("✅ 代码验证通过")
-                    break
-                else:
-                    error_msg = exec_err or ""
-                    progress.write(f"⚠️ 执行错误: {error_msg[:200]}...")
-
+            progress.write("⚙️ LangGraph Agent 运行中...")
+            
+            use_structured = selected_model in ["gpt-4o", "gpt-4o-mini"]
+            
+            if use_structured:
+                executer = Executer(api_key, selected_model)
+                code = None
+                error_msg = ""
+                for attempt in range(3):
+                    if attempt == 0:
+                        progress.write(f"💻 Executer: 正在生成代码 (结构化输出)...")
+                        code = executer.generate_code(plan_str, code_template=code_template, use_structured=True)
+                    else:
+                        progress.write(f"🔁 重试: 将错误反馈给 LLM...")
+                        code = executer.retry_with_error(code, error_msg, use_structured=True)
+                    
+                    syntax_ok, syntax_err = CodeValidator.validate_syntax(code)
+                    if not syntax_ok:
+                        error_msg = f"语法错误: {syntax_err}"
+                        progress.write(f"⚠️ {error_msg}")
+                        continue
+                    
+                    exec_ok, _, exec_err = CodeValidator.execute_safe(code, test_inputs)
+                    if exec_ok:
+                        st.session_state["generated_code"] = code
+                        st.session_state["used_fallback"] = False
+                        progress.write("✅ 代码验证通过 (结构化输出)")
+                        break
+                    else:
+                        error_msg = exec_err or ""
+                        progress.write(f"⚠️ 执行错误: {error_msg[:200]}...")
+                
+                if st.session_state["generated_code"] is None:
+                    progress.write("🛟 结构化输出失败，尝试普通模式...")
+            
             if st.session_state["generated_code"] is None:
-                progress.write("🛟 所有重试均失败，使用兜底线性水库模型...")
-                st.session_state["generated_code"] = FALLBACK_CODE
-                st.session_state["used_fallback"] = True
+                result = run_agent_loop(
+                    plan=plan_str,
+                    code_template=code_template,
+                    inputs=test_inputs,
+                    openai_api_key=api_key,
+                    model_name=selected_model,
+                    max_attempts=3
+                )
+                
+                if result["validated"] and result["code"]:
+                    st.session_state["generated_code"] = result["code"]
+                    st.session_state["used_fallback"] = False
+                    progress.write(f"✅ LangGraph Agent 完成 (尝试次数: {result['attempts']})")
+                else:
+                    progress.write(f"⚠️ Agent 执行失败: {result.get('error', '未知错误')[:100]}")
+                    progress.write("🛟 使用兜底线性水库模型...")
+                    st.session_state["generated_code"] = FALLBACK_CODE
+                    st.session_state["used_fallback"] = True
         else:
             progress.write("💻 使用已缓存的模型代码")
 
