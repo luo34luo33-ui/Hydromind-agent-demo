@@ -1,6 +1,171 @@
 # Hydromind 更新说明
 
-## v1.3.1_develop (最新版本)
+## v1.3.5_develop (最新版本)
+
+**发布日期**: 2026-05-14
+
+### 核心升级：Mechanism-aware Knowledge Framework
+
+从 "Template-based Hydrological Coding Agent" 升级为 "Mechanism-aware Hydrological Model Synthesis Framework"。
+
+核心转变：**从"选模型"升级到"设计机制组合"**。
+
+#### Phase 1: Knowledge Graph 知识库建设
+
+新增 `knowledge/` 目录，人工编撰"小而精"的机制知识框架：
+
+| 文件 | 内容 | 数量 |
+|------|------|------|
+| `knowledge/mechanisms.json` | 水文机制原子定义 | 10个mechanisms |
+| `knowledge/patterns.json` | 跨模型结构模式抽象 | 7个patterns |
+| `knowledge/constraints.json` | 物理约束 + 兼容性规则 | 15条约束 + 9条兼容规则 |
+| `knowledge/model_decomposition.json` | 经典模型拆解参考 | 5个模型 (XAJ, HBV, Tank, SCS-CN, GR4J) |
+| `knowledge/templates/` | 机制级代码模板 | 7个模板文件 |
+
+#### Phase 2: Mechanism Registry
+
+新增 `src/kg/` 模块：
+
+| 文件 | 功能 |
+|------|------|
+| `src/kg/mechanism_registry.py` | 机制注册表，从JSON加载，支持按类别/模式/流域检索 |
+| `src/kg/kg_rag.py` | KG-RAG 引擎，基于机制知识的语义检索 |
+| `src/kg/reasoner.py` | 约束推理器，验证兼容性、物理约束、适用性 |
+
+#### Phase 3: Blueprint Planner 升级
+
+Planner 新增 `Blueprint` 模式和 `plan_blueprint()` 方法：
+
+| 旧版 | 新版 |
+|------|------|
+| 输出 `runoff_module_id` | 输出 `runoff_mechanism` |
+| 输出 `routing_module_id` | 输出 `routing_mechanism` |
+| 无 | 新增 `patterns`, `constraints`, `evap_mechanism` |
+| 选"模型" | 设计"机制组合" |
+
+#### 核心架构变化
+
+```
+旧: Planner → Registry(模型模板) → Executer
+新: Planner → KG-RAG → Reasoner → Executer(机制模板组合)
+```
+
+#### 新增文件一览
+
+```
+knowledge/
+├── mechanisms.json
+├── patterns.json
+├── constraints.json
+├── model_decomposition.json
+└── templates/
+    ├── runoff/
+    │   ├── saturation_excess.py
+    │   ├── infiltration_excess.py
+    │   └── soil_moisture.py
+    ├── routing/
+    │   ├── linear_reservoir.py
+    │   └── cascade.py
+    └── evap/
+        ├── layered_et.py
+        └── soil_et.py
+
+src/kg/
+├── __init__.py
+├── mechanism_registry.py
+├── kg_rag.py
+└── reasoner.py
+```
+
+#### 论文创新点对应
+
+| 创新点 | 实现位置 |
+|--------|----------|
+| Mechanism-level knowledge representation | `knowledge/mechanisms.json` |
+| Pattern-aware model synthesis | `knowledge/patterns.json` |
+| Constraint-guided KG-RAG | `src/kg/reasoner.py` |
+| Collaborative LLM-KG framework | `Planner` + `kg_rag` 集成 |
+
+#### 升级保障
+
+- **向后兼容**: 保留 `ModelingPlan` / `PLANNER_SYSTEM_PROMPT` 旧接口
+- **双模式**: `plan()` (旧) / `plan_blueprint()` (新)
+- **知识驱动**: LLM 只能按机制模板 + 物理约束生成，无法"自由发挥"
+
+---
+
+## v1.3.2_develop
+
+### 核心升级：权限优先级法则 + 兜底机制
+
+#### Phase 1: 权限优先级法则 (Permission Priority Rule)
+
+解决 LLM"谄媚行为"(sycophancy) 问题——当用户需求与系统约束冲突时，LLM 试图同时满足两者导致物理上不可能的输出。
+
+**问题示例**:
+- 用户在湿润区要求用"初损后损法"(超渗机制)
+- LLM 选择 XAJ(蓄满产流)满足系统规则
+- 然后声称"XAJ 可以实现初损后损法" —— 这是物理上不可能的！
+
+**解决方案**: 在 System Prompt 中添加权限优先级：
+
+```python
+【🛑 权限优先级法则】 - 当系统指令与用户需求冲突时，必须严格遵循此优先级：
+1. 【最高优先级】当用户需求与"强制水文选型铁律"冲突时，**必须服从铁律**，拒绝用户的物理上不可行的需求，并明确说明原因。
+2. 【第二优先级】当用户需求仅影响参数范围或优化目标时，可以合理调整但需在 reasoning 中说明。
+3. 【最低优先级】当用户需求只是偏好性建议，可以采纳但需符合铁律约束。
+
+【🚨 关键警告】严禁"谄媚行为"：
+- ❌ 不要说"XAJ模块可以实现初损后损法"
+- ✅ 正确做法：明确告知用户该需求与物理规律冲突，提供符合铁律的替代方案
+```
+
+#### Phase 2: 兜底机制 (Fallback Mechanism)
+
+当用户提供流域特征信息不足时（如缺少 climate、area、permeability），自动提供默认方案。
+
+**新增方法**:
+
+```python
+def _check_attributes_sufficient(self, attributes: str) -> bool:
+    """检查流域特征是否足够充分"""
+    required_keys = ["climate", "area", "permeability"]
+    key_count = sum(1 for key in required_keys if key in attributes.lower())
+    return key_count >= 2
+
+def _get_fallback_plan(self, attributes: str, user_request: str = "") -> ModelingPlan:
+    """当流域信息不足时，提供兜底方案"""
+    # 根据 user_request 推断模块选择
+    # 返回默认 ModelingPlan 对象
+```
+
+**数据流**:
+
+```
+用户输入 (信息不足)
+       ↓
+_check_attributes_sufficient() → False
+       ↓
+_get_fallback_plan() → ModelingPlan (兜底方案)
+       ↓
+ModelComposer.compose() → 完整模型
+```
+
+#### 修改文件
+
+| 文件 | 改动 |
+|------|------|
+| `src/agents/planner.py` | +50 行：权限优先级法则 + 兜底机制 |
+
+#### 收益
+
+- **物理一致性**: 杜绝"既满足系统规则 又满足用户需求"的伪科学输出
+- **健壮性**: 流域信息不足时依然可以运行
+- **可解释性**: reasoning 字段清晰说明选择依据
+
+---
+
+## v1.3.1_develop
 
 **发布日期**: 2025-05-04
 
@@ -344,7 +509,8 @@ SCE-UA (无需正则提取，直接使用 parameters_config)
 | v1.1 | 代码模板检索 + LangGraph | 已发布 |
 | v1.2 | Planner/Executer 双结构化 + 零正则 | 已发布 |
 | v1.3 | Prompt 修正 + Python Registry + 精确 ID | 已发布 |
-| v1.3.1 | 模块化 Code Template (产流/汇流模块组合) | 开发中 |
+| v1.3.1 | 模块化 Code Template (产流/汇流模块组合) | 已发布 |
+| v1.3.2 | 权限优先级法则 + 兜底机制 | 开发中 |
 
 ---
 

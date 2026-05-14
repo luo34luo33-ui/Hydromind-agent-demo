@@ -1,4 +1,4 @@
-from typing import TypedDict, Annotated
+from typing import TypedDict, Annotated, Optional
 from langgraph.graph import StateGraph, END
 from langgraph.prebuilt import ToolNode
 import numpy as np
@@ -16,8 +16,8 @@ class AgentState(TypedDict):
     inputs: dict
 
 
-def create_agent_graph(openai_api_key: str, model_name: str = "gpt-4o"):
-    executer = Executer(openai_api_key, model_name)
+def create_agent_graph(openai_api_key: str, model_name: str = "gpt-4o", base_url: Optional[str] = None):
+    executer = Executer(openai_api_key, model_name, base_url)
     validator = CodeValidator()
     
     def generate_code_node(state: AgentState) -> AgentState:
@@ -111,6 +111,7 @@ def run_agent_loop(
     inputs: dict,
     openai_api_key: str,
     model_name: str = "gpt-4o",
+    base_url: Optional[str] = None,
     max_attempts: int = 3
 ):
     """
@@ -122,12 +123,13 @@ def run_agent_loop(
         inputs: 测试输入 {"precip": np.array, "pet": np.array, "params": dict}
         openai_api_key: OpenAI API 密钥
         model_name: 模型名称
+        base_url: API base URL (用于DeepSeek等)
         max_attempts: 最大尝试次数
     
     返回:
         {"code": str, "validated": bool, "error": str|None, "attempts": int}
     """
-    graph = create_agent_graph(openai_api_key, model_name)
+    graph = create_agent_graph(openai_api_key, model_name, base_url)
     
     initial_state: AgentState = {
         "plan": plan,

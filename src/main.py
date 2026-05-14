@@ -19,6 +19,7 @@ from utils.rag_engine import HydroKnowledgeBase, CodeTemplateRAG
 from agents.graph import run_agent_loop
 from agents.planner import Planner, ModelingPlan
 from agents.executer import Executer
+from agents.reviewer import Reviewer, ReviewResult
 from agents.validator import CodeValidator, execute_with_fallback, FALLBACK_CODE
 from simulation.ml_correction import ResidualCorrector
 from simulation.sceua import (
@@ -150,21 +151,43 @@ if "_prev_user_request" not in st.session_state:
     st.session_state["_prev_user_request"] = ""
 if "trigger_run" not in st.session_state:
     st.session_state["trigger_run"] = False
+if "review_history" not in st.session_state:
+    st.session_state["review_history"] = []
 
 sidebar = st.sidebar
 
 sidebar.header("🔑 系统配置")
-api_key = sidebar.text_input("OpenAI API Key", value="", type="password",
-                             placeholder="sk-...")
-if api_key and api_key.startswith("sk-"):
+
+LLM_PROVIDER = sidebar.radio(
+    "LLM 提供商",
+    ["OpenAI", "DeepSeek"],
+    index=1,
+    horizontal=True
+)
+
+if LLM_PROVIDER == "DeepSeek":
+    api_key = sidebar.text_input("DeepSeek API Key", value="sk-3d3e20e1873845b5acfaa01a9dbaf06e", type="password",
+                                 placeholder="sk-...")
+    selected_model = sidebar.selectbox(
+        "选择 DeepSeek 模型",
+        ["deepseek-chat"],
+        index=0
+    )
+    base_url = "https://api.deepseek.com/v1"
+else:
+    api_key = sidebar.text_input("OpenAI API Key", value="", type="password",
+                                 placeholder="sk-...")
+    selected_model = sidebar.selectbox(
+        "选择 OpenAI 模型",
+        ["gpt-4o", "gpt-4o-mini", "gpt-4-turbo", "gpt-3.5-turbo"],
+        index=0
+    )
+    base_url = None
+
+if api_key:
     os.environ["OPENAI_API_KEY"] = api_key
 
-selected_model = sidebar.selectbox(
-    "选择 LLM 模型",
-    ["gpt-4o", "gpt-4o-mini", "gpt-4-turbo", "gpt-3.5-turbo"],
-    index=0
-)
-sidebar.caption(f"🤖 当前模型: {selected_model}")
+sidebar.caption(f"🤖 当前模型: {selected_model} ({LLM_PROVIDER})")
 
 
 
@@ -179,6 +202,7 @@ if st.session_state["_prev_basin"] != selected_basin_id:
     st.session_state["q_corrected"] = None
     st.session_state["sceua_optimal_params"] = None
     st.session_state["sceua_optimal_nse"] = None
+    st.session_state["review_history"] = []
     st.session_state["_prev_basin"] = selected_basin_id
 
 basin_info = get_basin_info_dict(selected_basin_id)
@@ -221,6 +245,7 @@ with left_col:
         st.session_state["q_corrected"] = None
         st.session_state["sceua_optimal_params"] = None
         st.session_state["sceua_optimal_nse"] = None
+        st.session_state["review_history"] = []
         st.session_state["_prev_user_request"] = user_request
 
     st.markdown("")
@@ -238,7 +263,7 @@ with left_col:
             else:
                 rag_query = "水文模型 产流 汇流"
             context = kb.retrieve(rag_query, k=5)
-            planner = Planner(api_key, selected_model)
+            planner = Planner(api_key, selected_model, base_url)
             
             planner_use_structured = selected_model in ["gpt-4o", "gpt-4o-mini"]
             plan_obj = planner.plan(
@@ -302,6 +327,10 @@ with left_col:
                 "pet": data["pet"].values,
                 "params": test_params,
             }
+            
+            plan_str = str(plan_obj) if not isinstance(plan_obj, ModelingPlan) else getattr(plan_obj, 'description', str(plan_obj))
+            param_constraints = None if not isinstance(plan_obj, ModelingPlan) else getattr(plan_obj, 'param_suggestions', None)
+            code_template = ""
 
             progress.write("⚙️ LangGraph Agent 运行中...")
             
@@ -310,7 +339,7 @@ with left_col:
             generated_params_config = None
             
             if use_structured:
-                executer = Executer(api_key, selected_model)
+                executer = Executer(api_key, selected_model, base_url)
                 code_result = {"code": None, "parameters_config": {}}
                 error_msg = ""
                 for attempt in range(3):
@@ -350,6 +379,7 @@ with left_col:
                     inputs=test_inputs,
                     openai_api_key=api_key,
                     model_name=selected_model,
+                    base_url=base_url,
                     max_attempts=3
                 )
                 
@@ -365,6 +395,148 @@ with left_col:
         else:
             progress.write("💻 使用已缓存的模型代码")
             generated_params_config = st.session_state.get("generated_params_config", {})
+
+        # ===== Phase 2.5: Reviewer Agent 迭代优化循环 =====
+        REVIEW_MAX_ITER = 5
+        QUICK_CALIB_YEARS = 3
+        QUICK_MAXN = 500
+        NSE_THRESHOLD = 0.2
+
+        code = st.session_state.get("generated_code")
+        
+        use_structured = selected_model in ["gpt-4o", "gpt-4o-mini"]
+        param_constraints = None
+        if isinstance(plan_obj, ModelingPlan):
+            param_constraints = getattr(plan_obj, 'param_suggestions', None)
+        
+        if code:
+            best_nse = -999.0
+            best_code = code
+            best_params = {}
+            review_iteration = 0
+            review_feedback_history = []
+            prev_nse = None
+            st.session_state["review_history"] = []
+            
+            progress.write("🔄 开始 Reviewer 迭代优化循环...")
+            
+            while review_iteration < REVIEW_MAX_ITER:
+                review_iteration += 1
+                progress.write(f"  → 第 {review_iteration}/{REVIEW_MAX_ITER} 次迭代")
+                
+                calib_data_quick = data.sort_values("date").reset_index(drop=True)
+                years = calib_data_quick["date"].dt.year
+                unique_years = sorted(years.unique())
+                n_years = len(unique_years)
+                
+                if n_years >= QUICK_CALIB_YEARS:
+                    calib_year_list = unique_years[:QUICK_CALIB_YEARS]
+                    calib_data_quick = calib_data_quick[years.isin(calib_year_list)].copy()
+                else:
+                    split_idx = int(len(calib_data_quick) * 0.3)
+                    calib_data_quick = calib_data_quick.iloc[:split_idx]
+                
+                precip_quick = calib_data_quick["precip"].values
+                pet_quick = calib_data_quick["pet"].values
+                q_obs_quick = calib_data_quick["q_obs"].values
+                
+                param_names = extract_params_from_code(code)
+                if not param_names:
+                    param_names = ["k", "S0"]
+                bounds_list = get_bounds_for_params(param_names)
+                
+                obj_func_quick = build_calibration_objective(
+                    code, precip_quick, pet_quick, q_obs_quick, param_names, compute_nse
+                )
+                
+                sceua_quick = SCEUA(bounds_list, obj_func_quick, maxn=QUICK_MAXN)
+                best_x_quick, best_nse_quick, _ = sceua_quick.calibrate()
+                
+                progress.write(f"     快速标定 NSE = {best_nse_quick:.4f}")
+                
+                if best_nse_quick > best_nse:
+                    best_nse = best_nse_quick
+                    best_code = code
+                    best_params = dict(zip(param_names, np.atleast_1d(best_x_quick)))
+                
+                if best_nse_quick >= NSE_THRESHOLD:
+                    progress.write(f"✅ 达到 NSE ≥ {NSE_THRESHOLD} 目标，退出迭代")
+                    break
+                
+                reviewer = Reviewer(api_key, selected_model, base_url)
+                plan_str = str(plan_obj) if not isinstance(plan_obj, ModelingPlan) else getattr(plan_obj, 'description', str(plan_obj))
+                
+                feedback_text = ""
+                if review_iteration > 1 and review_feedback_history:
+                    feedback_text = "\n\n历史反馈:\n" + "\n---\n".join(review_feedback_history[-2:])
+                
+                review_result = reviewer.review_code(
+                    code=code,
+                    plan=plan_str,
+                    nse_score=best_nse_quick,
+                    error_log="",
+                    use_structured=use_structured
+                )
+                
+                feedback = reviewer.format_feedback(review_result)
+                review_feedback_history.append(feedback)
+                progress.write(f"  ⚠️ Reviewer 反馈: {review_result.assessment}")
+                
+                if review_result.assessment == "critical_fail":
+                    progress.write("  🔴 代码存在严重物理错误，尝试重新生成...")
+                    executer = Executer(api_key, selected_model, base_url)
+                    code_result = executer.generate_code(plan_str, code_template="", param_constraints=param_constraints, use_structured=use_structured)
+                    code = code_result.get("code", "") if isinstance(code_result, dict) else code_result
+                else:
+                    executer = Executer(api_key, selected_model, base_url)
+                    code_result = executer.adjust_code(
+                        current_code=code,
+                        feedback=feedback,
+                        plan=plan_str,
+                        param_constraints=param_constraints,
+                        use_structured=use_structured
+                    )
+                    code = code_result.get("code", "") if isinstance(code_result, dict) else code_result
+                
+                syntax_ok, syntax_err = CodeValidator.validate_syntax(code)
+                if not syntax_ok:
+                    progress.write(f"  ⚠️ 语法错误: {syntax_err}")
+                    continue
+                
+                st.session_state["generated_code"] = code
+                generated_params_config = code_result.get("parameters_config", {}) if isinstance(code_result, dict) else {}
+
+                delta_nse = None
+                if prev_nse is not None:
+                    delta_nse = best_nse_quick - prev_nse
+                prev_nse = best_nse_quick
+
+                st.session_state["review_history"].append({
+                    "iteration": review_iteration,
+                    "nse": float(best_nse_quick),
+                    "delta_nse": delta_nse,
+                    "assessment": review_result.assessment,
+                    "reviewer_feedback": feedback,
+                    "adjusted_code": code,
+                })
+            
+            if best_nse < NSE_THRESHOLD:
+                progress.write(f"⚠️ 达到最大迭代次数，最佳 NSE = {best_nse:.4f}")
+                if best_nse < -1.0:
+                    progress.write("  🔴 代码完全失效，尝试 Module Composer 兜底...")
+                    try:
+                        composer = get_composer()
+                        if isinstance(plan_obj, ModelingPlan) and hasattr(plan_obj, 'runoff_module_id'):
+                            model_info = composer.compose(plan_obj.runoff_module_id, plan_obj.routing_module_id)
+                            best_code = model_info["code"]
+                            generated_params_config = model_info["params"]
+                            progress.write("  ✅ 使用 Module Composer 兜底成功")
+                    except Exception as e:
+                        progress.write(f"  ❌ Composer 兜底失败: {e}")
+            
+            st.session_state["generated_code"] = best_code
+            st.session_state["generated_params_config"] = generated_params_config if generated_params_config else best_params
+            progress.write(f"  📊 迭代结束，最佳快速NSE = {best_nse:.4f}")
 
         # ===== Phase 3: SCE-UA Calibration =====
         code = st.session_state["generated_code"]
@@ -466,6 +638,7 @@ with left_col:
             st.session_state["q_corrected"] = None
             st.session_state["sceua_optimal_params"] = None
             st.session_state["sceua_optimal_nse"] = None
+            st.session_state["review_history"] = []
             st.rerun()
 
     if st.session_state.get("trigger_run", False):
@@ -484,6 +657,36 @@ with left_col:
             st.code(st.session_state["generated_code"], language="python")
             if st.session_state.get("used_fallback"):
                 st.warning("⚠️ LLM 生成的代码未能成功执行，当前使用内置兜底模型。")
+
+    if st.session_state.get("review_history"):
+        with st.expander("🔄 Reviewer 迭代优化过程", expanded=True):
+            for entry in st.session_state["review_history"]:
+                assessment = entry.get("assessment", "need_fix")
+                if assessment == "pass":
+                    icon = "🟢"
+                elif assessment == "critical_fail":
+                    icon = "🔴"
+                else:
+                    icon = "🟠"
+
+                nse_val = entry.get("nse", -999.0)
+                iteration = entry.get("iteration", 1)
+                expander_title = f"第{iteration}轮 | NSE={nse_val:.4f} | {icon} {assessment}"
+
+                with st.expander(expander_title, expanded=False):
+                    delta = entry.get("delta_nse")
+                    if delta is not None:
+                        st.metric(label="本轮快速标定 NSE", value=f"{nse_val:.4f}", delta=f"{delta:+.4f}")
+                    else:
+                        st.write(f"**本轮快速标定 NSE:** {nse_val:.4f}")
+
+                    st.divider()
+
+                    tab1, tab2 = st.tabs(["💬 Reviewer 反馈", "💻 Coder 调整后代码"])
+                    with tab1:
+                        st.markdown(entry.get("reviewer_feedback", "无反馈信息"))
+                    with tab2:
+                        st.code(entry.get("adjusted_code", "# 无代码"), language="python")
 
 with right_col:
     st.subheader("📈 模拟与观测对比")

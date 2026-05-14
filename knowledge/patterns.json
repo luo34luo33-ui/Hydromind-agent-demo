@@ -1,0 +1,89 @@
+{
+  "version": "1.0",
+  "description": "水文结构模式 - 跨模型共性抽象",
+  
+  "patterns": [
+    {
+      "pattern_id": "threshold",
+      "name": "阈值触发",
+      "description": "当状态变量超过某阈值时触发特定行为",
+      "mechanisms": ["saturation_excess", "infiltration_excess", "storage_runoff"],
+      "examples": [
+        "土壤含水量 > 田间持水量 → 产流",
+        "降雨强度 > 入渗能力 → 地表径流",
+        "土壤张力水 > 蒸发层厚度 → 蒸发"
+      ],
+      "code_principle": "if storage >= threshold: action else: alternative"
+    },
+    {
+      "pattern_id": "reservoir",
+      "name": "蓄泄结构",
+      "description": "存储量与出流量呈特定函数关系",
+      "mechanisms": ["linear_reservoir", "nonlinear_reservoir", "recession"],
+      "examples": [
+        "Q = k * S (线性)",
+        "Q = a * S^b (非线性)",
+        "Q = kg * S (基流退水)"
+      ],
+      "code_principle": "outflow = function(storage, params); storage_after = storage + inflow - outflow"
+    },
+    {
+      "pattern_id": "cascade",
+      "name": "串联结构",
+      "description": "多个单元顺序连接，上游输出为下游输入",
+      "mechanisms": ["cascade", "nash_routing"],
+      "examples": [
+        "HBV: UZ1 → UZ2 → Q",
+        "Tank: S1 → S2 → S3",
+        "Nash: S1 → S2 → ... → Sn → Q"
+      ],
+      "code_principle": "for i in range(n): output[i] = reservoir(input[i], storage[i])"
+    },
+    {
+      "pattern_id": "partition",
+      "name": "水量分配",
+      "description": "将输入按比例或规则分配到不同路径/水库",
+      "mechanisms": ["soil_moisture_accounting", "layered_et", "saturation_excess"],
+      "examples": [
+        "XAJ: 自由水划分为地表/壤中/地下",
+        "三层ET: 上层消耗完才到中层",
+        "水源划分: 产生地表径流和壤中流"
+      ],
+      "code_principle": "partition = function(storage_ratio); output1 = partition * input; output2 = (1-partition) * input"
+    },
+    {
+      "pattern_id": "delay",
+      "name": "汇流延迟",
+      "description": "输入到输出之间存在时间延迟",
+      "mechanisms": ["nash_routing", "cascade"],
+      "examples": [
+        "Nash瞬时单位线",
+        "滞后演算法",
+        "三角形单位线"
+      ],
+      "code_principle": "output[t] = sum(inflow[t-i] * weight[i] for i in range(delay))"
+    },
+    {
+      "pattern_id": "exponential_decay",
+      "name": "指数衰减",
+      "description": "状态随时间指数衰减",
+      "mechanisms": ["linear_reservoir", "recession"],
+      "examples": [
+        "基流退水: Q(t) = Q0 * exp(-k*t)",
+        "线性水库: S[t+1] = S[t] * (1-k)"
+      ],
+      "code_principle": "storage_after = storage * (1 - k); outflow = k * storage"
+    },
+    {
+      "pattern_id": "ratio",
+      "name": "比例缩放",
+      "description": "根据状态比例缩放输出",
+      "mechanisms": ["soil_et", "soil_moisture_accounting"],
+      "examples": [
+        "HBV: E = EP * (soil / (LP*FC))",
+        "实际蒸散发占潜在蒸散发的比例取决于土壤湿度"
+      ],
+      "code_principle": "ratio = min(storage / reference, 1.0); output = input * ratio"
+    }
+  ]
+}

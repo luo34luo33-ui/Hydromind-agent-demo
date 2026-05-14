@@ -39,11 +39,12 @@ def simulate_runoff(precip, pet, params):
 
 class Executer:
 
-    def __init__(self, openai_api_key, model_name="gpt-4o"):
+    def __init__(self, openai_api_key, model_name="gpt-4o", base_url: Optional[str] = None):
         self.llm = ChatOpenAI(
             model=model_name,
             temperature=0.0,
             openai_api_key=openai_api_key,
+            base_url=base_url,
         )
         self._structured_llm = None
         
@@ -135,6 +136,72 @@ class Executer:
             f"请修正错误后重新生成 simulate_runoff 函数。\n\n"
             f"【重要约束】：修正时必须保留原始代码中的物理机制和水量平衡逻辑，仅修复语法错误或逻辑错误，不要随意修改物理公式。"
         )
+        
+        if use_structured:
+            structured_llm = self._get_structured_llm()
+            if structured_llm:
+                try:
+                    result = structured_llm.invoke(user_message)
+                    if hasattr(result, 'simulate_function'):
+                        return {
+                            "code": result.simulate_function,
+                            "parameters_config": result.parameters_config,
+                            "reasoning": result.reasoning
+                        }
+                except Exception:
+                    pass
+        
+        prompt = ChatPromptTemplate.from_messages([
+            ("system", EXECUTER_SYSTEM_PROMPT),
+            ("user", "{user_message}"),
+        ])
+        chain = prompt | self.llm
+        response = chain.invoke({"user_message": user_message})
+        
+        content = response.content
+        if isinstance(content, list):
+            content = content[0].get("text", "") if content else ""
+        code = str(content).strip()
+        code = code.replace("```python", "").replace("```", "").strip()
+        
+        return {"code": code, "parameters_config": {}, "reasoning": ""}
+
+    def adjust_code(self, current_code: str, feedback: str, plan: str = "", param_constraints: dict = None, use_structured: bool = True):
+        """基于Reviewer反馈调整现有代码（不重写，而是修改）"""
+        
+        param_context = ""
+        if param_constraints:
+            param_list = ", ".join([f"{k}: {v[0]}-{v[1]}" for k, v in param_constraints.items()])
+            param_context = f"""
+约束参数（必须使用这些参数名）：
+- 参数列表: {param_list}
+"""
+
+        user_message = f"""
+## 当前代码版本
+```python
+{current_code}
+```
+
+## 建模方案
+{plan}
+{param_context}
+
+## Reviewer 反馈意见
+{feedback}
+
+## 任务要求
+请仔细阅读上述Reviewer反馈，**基于当前代码进行针对性修改**，而不是从头重写。
+
+【严格约束】：
+1. **保留当前代码的整体结构**，仅针对反馈中指出的具体问题进行修改
+2. **不要改变变量命名风格**，保持代码的一致性
+3. **确保修改后代码仍然满足水量平衡**
+4. **输出完整的修改后函数代码**，不要输出diff/patch
+5. 不要写import语句（假设numpy已可用）
+
+请输出完整的 simulate_runoff 函数代码。
+"""
         
         if use_structured:
             structured_llm = self._get_structured_llm()

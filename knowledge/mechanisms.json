@@ -1,0 +1,245 @@
+{
+  "version": "1.0",
+  "description": "水文机制知识库 - 原子级物理过程定义",
+  "categories": ["runoff", "routing", "evap", "groundwater"],
+  
+  "runoff": [
+    {
+      "mechanism_id": "saturation_excess",
+      "name": "蓄满产流",
+      "description": "当土壤含水量超过田间持水量时产生径流",
+      "hydrological_role": "Generate surface runoff when soil storage exceeds field capacity",
+      "patterns": ["threshold", "storage"],
+      "suitable_for": ["humid basin", "large basin", "南方湿润区", "subhumid"],
+      "inputs": ["precipitation", "soil_storage", "field_capacity"],
+      "outputs": ["surface_runoff", "remaining_precipitation"],
+      "constraints": [
+        "runoff <= precipitation + soil_storage_before",
+        "requires_soil_storage"
+      ],
+      "compatible_routing": ["linear_reservoir", "nonlinear_reservoir", "cascade"],
+      "related_models": ["xaj", "topmodel", "sacramento"],
+      "implementation_template": "runoff/saturation_excess.py",
+      "params": {
+        "wm": [80, 200],
+        "b": [0.1, 1.0],
+        "im": [0, 0.1]
+      }
+    },
+    {
+      "mechanism_id": "infiltration_excess",
+      "name": "超渗产流",
+      "description": "降雨强度超过入渗能力时产生地表径流",
+      "hydrological_role": "Generate runoff when rainfall intensity exceeds infiltration capacity",
+      "patterns": ["threshold", "rate_limited"],
+      "suitable_for": ["arid basin", "small basin", "北方干旱区", "高强度暴雨", "flash_flood"],
+      "inputs": ["precipitation", "infiltration_capacity"],
+      "outputs": ["surface_runoff", "infiltration"],
+      "constraints": [
+        "runoff <= precipitation",
+        "requires_infiltration_capacity"
+      ],
+      "compatible_routing": ["linear_reservoir", "direct_routing"],
+      "related_models": ["scs_cn", "green_ampt"],
+      "implementation_template": "runoff/infiltration_excess.py",
+      "params": {
+        "cn": [30, 95],
+        "smax": [0, 500],
+        "ia_factor": [0.1, 0.3]
+      }
+    },
+    {
+      "mechanism_id": "soil_moisture_accounting",
+      "name": "土壤水分账",
+      "description": "通过土壤含水量动态平衡计算产流",
+      "hydrological_role": "Account soil moisture changes to determine runoff generation",
+      "patterns": ["storage", "partition"],
+      "suitable_for": ["temperate basin", "HBV-type basins", "寒带"],
+      "inputs": ["precipitation", "potential_et", "soil_storage", "fc", "lp"],
+      "outputs": ["runoff", "actual_et", "soil_storage_change"],
+      "constraints": [
+        "mass_conservation",
+        "actual_et <= potential_et"
+      ],
+      "compatible_routing": ["linear_reservoir", "cascade"],
+      "related_models": ["hbv", "gr4j"],
+      "implementation_template": "runoff/soil_moisture.py",
+      "params": {
+        "fc": [100, 500],
+        "lp": [0.3, 0.9],
+        "beta": [1.0, 6.0]
+      }
+    },
+    {
+      "mechanism_id": "storage_runoff",
+      "name": "蓄水产流",
+      "description": "简单蓄水结构，存储量超过阈值后产流",
+      "hydrological_role": "Generate runoff when storage exceeds threshold",
+      "patterns": ["threshold", "storage"],
+      "suitable_for": ["simple model", "educational"],
+      "inputs": ["precipitation", "storage", "threshold"],
+      "outputs": ["runoff", "storage_after"],
+      "constraints": [
+        "mass_conservation",
+        "runoff >= 0"
+      ],
+      "compatible_routing": ["linear_reservoir"],
+      "related_models": ["tank", "simple"],
+      "implementation_template": "runoff/storage_runoff.py",
+      "params": {
+        "k1": [0.1, 0.8],
+        "threshold": [0, 100]
+      }
+    }
+  ],
+  
+  "routing": [
+    {
+      "mechanism_id": "linear_reservoir",
+      "name": "线性水库",
+      "description": "蓄水量与出流量呈线性关系 Q = k * S",
+      "hydrological_role": "Route runoff with linear storage-discharge relationship",
+      "patterns": ["reservoir", "exponential_decay"],
+      "suitable_for": ["slow_response", "baseflow", "groundwater", "南方流域"],
+      "inputs": ["inflow", "storage", "k"],
+      "outputs": ["outflow", "storage_after"],
+      "constraints": [
+        "mass_conservation",
+        "Q >= 0",
+        "S_after = S_before + inflow - outflow"
+      ],
+      "related_models": ["xaj", "hbv", "tank"],
+      "implementation_template": "routing/linear_reservoir.py",
+      "params": {
+        "k": [0.01, 0.5],
+        "s0": [0, 200]
+      }
+    },
+    {
+      "mechanism_id": "cascade",
+      "name": "线性水库串联",
+      "description": "多个线性水库串联，模拟延迟效应",
+      "hydrological_role": "Simulate delay and attenuation through cascaded reservoirs",
+      "patterns": ["cascade", "reservoir", "delay"],
+      "suitable_for": ["medium_response", "flood_routing", "湿润区"],
+      "inputs": ["inflow", "k1", "k2", "k3"],
+      "outputs": ["outflow"],
+      "constraints": [
+        "mass_conservation",
+        "requires_multiple_storages"
+      ],
+      "related_models": ["hbv", "tank", "sacramento"],
+      "implementation_template": "routing/cascade.py",
+      "params": {
+        "k1": [0.1, 0.5],
+        "k2": [0.05, 0.3],
+        "k3": [0.001, 0.1]
+      }
+    },
+    {
+      "mechanism_id": "nonlinear_reservoir",
+      "name": "非线性水库",
+      "description": "蓄水量与出流量呈非线性关系 Q = a * S^b",
+      "hydrological_role": "Route runoff with nonlinear storage-discharge relationship",
+      "patterns": ["reservoir", "nonlinear"],
+      "suitable_for": ["flood", "rapid_response"],
+      "inputs": ["inflow", "storage", "a", "b"],
+      "outputs": ["outflow", "storage_after"],
+      "constraints": [
+        "mass_conservation",
+        "Q >= 0"
+      ],
+      "related_models": ["tank", "vic"],
+      "implementation_template": "routing/nonlinear_reservoir.py",
+      "params": {
+        "a": [0.1, 2.0],
+        "b": [1.0, 3.0],
+        "s0": [0, 200]
+      }
+    },
+    {
+      "mechanism_id": "nash_routing",
+      "name": "Nash单位线",
+      "description": "N个串联线性水库模拟单位线",
+      "hydrological_role": "Simulate unit hydrograph through cascaded linear reservoirs",
+      "patterns": ["cascade", "delay", "unit_hydrograph"],
+      "suitable_for": ["flood_routing", "medium_catchment"],
+      "inputs": ["inflow", "k", "n"],
+      "outputs": ["outflow"],
+      "constraints": [
+        "mass_conservation"
+      ],
+      "related_models": ["nash", "unit_hydrograph"],
+      "implementation_template": "routing/nash_routing.py",
+      "params": {
+        "k": [1, 10],
+        "n": [1, 5]
+      }
+    }
+  ],
+  
+  "evap": [
+    {
+      "mechanism_id": "layered_et",
+      "name": "分层蒸散发",
+      "description": "三层结构：上层优先蒸发，中层次之，下层最慢",
+      "hydrological_role": "Multi-layer evapotranspiration with priority sequence",
+      "patterns": ["partition", "priority"],
+      "suitable_for": ["humid basin", "seasonal variation", "南方流域"],
+      "inputs": ["precipitation", "potential_et", "upper_storage", "lower_storage", "wm", "um", "lm"],
+      "outputs": ["upper_et", "lower_et", "remaining_pet"],
+      "constraints": [
+        "upper_et >= lower_et",
+        "total_et <= potential_et"
+      ],
+      "related_models": ["xaj", "sacramento"],
+      "implementation_template": "evap/layered_et.py",
+      "params": {
+        "um": [20, 80],
+        "lm": [30, 120],
+        "c": [0.1, 0.3]
+      }
+    },
+    {
+      "mechanism_id": "soil_et",
+      "name": "土壤蒸散发",
+      "description": "依据土壤含水量比例折算实际蒸散发",
+      "hydrological_role": "Scale actual ET based on soil moisture ratio",
+      "patterns": ["ratio", "linear"],
+      "suitable_for": ["general", "temperate"],
+      "inputs": ["potential_et", "soil_storage", "fc", "lp"],
+      "outputs": ["actual_et"],
+      "constraints": [
+        "actual_et <= potential_et",
+        "actual_et increases with soil_storage"
+      ],
+      "related_models": ["hbv", "gr4j"],
+      "implementation_template": "evap/soil_et.py",
+      "params": {
+        "lp_ratio": [0.3, 0.9]
+      }
+    }
+  ],
+  
+  "groundwater": [
+    {
+      "mechanism_id": "recession",
+      "name": "退水曲线",
+      "description": "基流随时间指数衰减",
+      "hydrological_role": "Baseflow recession with exponential decay",
+      "patterns": ["exponential_decay", "reservoir"],
+      "suitable_for": ["baseflow", "dry_season"],
+      "inputs": ["storage", "k"],
+      "outputs": ["baseflow", "storage_after"],
+      "constraints": [
+        "mass_conservation",
+        "baseflow >= 0"
+      ],
+      "related_models": ["xaj", "hbv"],
+      "implementation_template": "groundwater/recession.py",
+      "params": {
+        "kg": [0.001, 0.05]
+      }
+    }
+  ]
+}

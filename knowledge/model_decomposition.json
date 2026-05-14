@@ -1,0 +1,176 @@
+{
+  "version": "1.0",
+  "description": "经典水文模型分解 - 参考模型到机制的映射",
+  
+  "models": [
+    {
+      "model_id": "xaj",
+      "name": "新安江模型",
+      "description": "中国湿润区最广泛使用的概念性水文模型",
+      "mechanisms": [
+        "saturation_excess",
+        "layered_et",
+        "linear_reservoir"
+      ],
+      "patterns": ["threshold", "partition", "reservoir", "priority"],
+      "structure": {
+        "runoff_generation": {
+          "mechanism": "saturation_excess",
+          "description": "蓄满产流 + 张力水容量分布曲线"
+        },
+        "source_partition": {
+          "mechanism": "partition",
+          "description": "自由水容量曲线划分地表/壤中/地下水源"
+        },
+        "routing": {
+          "mechanism": "linear_reservoir",
+          "description": "线性水库汇流（地表快速+壤中中等+地下慢速）"
+        },
+        "evapotranspiration": {
+          "mechanism": "layered_et",
+          "description": "三层蒸发：上层张力水、中层张力水、深层蒸发"
+        }
+      },
+      "suitable_for": ["humid", "subhumid", "南方流域", "湿润季节"],
+      "typical_params": {
+        "wm": [100, 200],
+        "um": [20, 60],
+        "lm": [60, 120],
+        "b": [0.2, 0.6],
+        "c": [0.1, 0.2],
+        "sm": [10, 40],
+        "ex": [0.5, 1.0],
+        "k": [0.5, 1.0]
+      }
+    },
+    {
+      "model_id": "hbv",
+      "name": "HBV模型",
+      "description": "瑞典水文研究所开发的概念性模型，全球应用广泛",
+      "mechanisms": [
+        "soil_moisture_accounting",
+        "cascade",
+        "soil_et",
+        "linear_reservoir"
+      ],
+      "patterns": ["storage", "cascade", "ratio", "exponential_decay"],
+      "structure": {
+        "soil": {
+          "mechanism": "soil_moisture_accounting",
+          "description": "土壤含水量响应函数 (Beta函数)"
+        },
+        "response": {
+          "mechanism": "cascade",
+          "description": "两个线性水库串联(快速响应+慢速响应)"
+        },
+        "routing": {
+          "mechanism": "linear_reservoir",
+          "description": "三角汇流将军水库出流转换为流域出口流量"
+        },
+        "evapotranspiration": {
+          "mechanism": "soil_et",
+          "description": "土壤蒸散发按土壤湿度比例折算"
+        }
+      },
+      "suitable_for": ["temperate", "boreal", "snow_melt", "寒带"],
+      "typical_params": {
+        "fc": [150, 400],
+        "lp": [0.4, 0.7],
+        "beta": [1.5, 4.0],
+        "k0": [0.1, 0.4],
+        "k1": [0.02, 0.1],
+        "uzl": [20, 80]
+      }
+    },
+    {
+      "model_id": "tank",
+      "name": "Tank模型",
+      "description": "日本开发的多水箱串联模型",
+      "mechanisms": [
+        "storage_runoff",
+        "cascade",
+        "linear_reservoir"
+      ],
+      "patterns": ["cascade", "reservoir", "threshold"],
+      "structure": {
+        "structure": {
+          "mechanism": "cascade",
+          "description": "三水箱（或四水箱）串联结构"
+        },
+        "runoff": {
+          "mechanism": "storage_runoff",
+          "description": "每个水箱根据蓄水阈值产生出流"
+        },
+        "lateral": {
+          "mechanism": "linear_reservoir",
+          "description": "水箱间侧向渗透"
+        }
+      },
+      "suitable_for": ["various", "rapid_response", "都市型洪水"],
+      "typical_params": {
+        "k1": [0.2, 0.6],
+        "k2": [0.05, 0.2],
+        "k3": [0.01, 0.05],
+        "s1_init": [30, 80],
+        "s2_init": [50, 120],
+        "s3_init": [80, 150]
+      }
+    },
+    {
+      "model_id": "scs_cn",
+      "name": "SCS-CN模型",
+      "description": "美国农业部水土保持局开发的径流曲线数法",
+      "mechanisms": [
+        "infiltration_excess"
+      ],
+      "patterns": ["threshold", "storage"],
+      "structure": {
+        "runoff": {
+          "mechanism": "infiltration_excess",
+          "description": "CN曲线法计算降雨-径流关系"
+        },
+        "initial_abstraction": {
+          "mechanism": "storage_runoff",
+          "description": "初损Ia后损法"
+        }
+      },
+      "suitable_for": ["arid", "semi_arid", "small_basin", "flash_flood", "无资料地区"],
+      "typical_params": {
+        "cn": [40, 90],
+        "ia_ratio": [0.1, 0.3]
+      }
+    },
+    {
+      "model_id": "gr4j",
+      "name": "GR4J模型",
+      "description": "法国开发的四参数日模型",
+      "mechanisms": [
+        "soil_et",
+        "storage_runoff",
+        "cascade"
+      ],
+      "patterns": ["storage", "cascade", "exchange"],
+      "structure": {
+        "production": {
+          "mechanism": "storage_runoff",
+          "description": "单水箱产流 + 自由水划分"
+        },
+        "routing": {
+          "mechanism": "cascade",
+          "description": "两个串联线性水库 + 马斯京根演变"
+        },
+        "exchange": {
+          "mechanism": "linear_reservoir",
+          "description": "地下水交换"
+        }
+      },
+      "suitable_for": ["temperate", "medium_catchment"],
+      "typical_params": {
+        "x1": [50, 1500],
+        "x2": [-10, 10],
+        "x3": [10, 500],
+        "x4": [0.5, 10]
+      }
+    }
+  ]
+}

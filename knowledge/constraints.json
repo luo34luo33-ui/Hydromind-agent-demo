@@ -1,0 +1,177 @@
+{
+  "version": "1.0",
+  "description": "水文物理约束 - 防止机制乱拼的硬性规则",
+  
+  "constraints": [
+    {
+      "constraint_id": "mass_conservation",
+      "type": "physics",
+      "description": "水量守恒：ΔS = Σ输入 - Σ输出",
+      "rule": "storage_change = sum(inputs) - sum(outputs)",
+      "enforcement": "hard",
+      "check_code": "abs(storage_change - (sum(inputs) - sum(outputs))) < 1e-6"
+    },
+    {
+      "constraint_id": "runoff_nonnegative",
+      "type": "physics",
+      "description": "径流量不能为负",
+      "rule": "runoff >= 0",
+      "enforcement": "hard",
+      "check_code": "runoff = max(runoff, 0)"
+    },
+    {
+      "constraint_id": "runoff_bounded_by_water",
+      "type": "physics",
+      "description": "产流量不能超过可用水量",
+      "rule": "runoff <= precipitation + storage_before - min_storage",
+      "enforcement": "hard",
+      "check_code": "runoff = min(runoff, precipitation + storage_before - min_storage)"
+    },
+    {
+      "constraint_id": "et_nonnegative",
+      "type": "physics",
+      "description": "蒸散发不能为负",
+      "rule": "et >= 0",
+      "enforcement": "hard",
+      "check_code": "et = max(et, 0)"
+    },
+    {
+      "constraint_id": "et_limited_by_pet",
+      "type": "physics",
+      "description": "实际蒸散发不能超过潜在蒸散发",
+      "rule": "actual_et <= potential_et",
+      "enforcement": "hard",
+      "check_code": "actual_et = min(actual_et, potential_et)"
+    },
+    {
+      "constraint_id": "routing_requires_input",
+      "type": "structural",
+      "description": "汇流模块必须有输入",
+      "rule": "routing.inflow must not be None or always zero",
+      "enforcement": "hard"
+    },
+    {
+      "constraint_id": "evap_before_runoff",
+      "type": "structural",
+      "description": "蒸散发应优先消耗降雨，不应先消耗土壤水",
+      "rule": "P should be used for ET first, then soil_storage",
+      "enforcement": "warning"
+    },
+    {
+      "constraint_id": "saturation_incompatible_dry",
+      "type": "compatibility",
+      "description": "蓄满产流不适用于干旱区",
+      "rule": "saturation_excess not suitable for arid basin",
+      "enforcement": "hard",
+      "applies_when": "basin.climate == 'arid' or basin.climate == 'semi_arid'"
+    },
+    {
+      "constraint_id": "infiltration_incompatible_humid",
+      "type": "compatibility",
+      "description": "超渗产流不适用于湿润区",
+      "rule": "infiltration_excess not suitable for humid basin",
+      "enforcement": "warning",
+      "applies_when": "basin.climate == 'humid'"
+    },
+    {
+      "constraint_id": "cascade_requires_states",
+      "type": "structural",
+      "description": "串联结构需要多个状态变量",
+      "rule": "cascade needs multiple storage states (S1, S2, ...)",
+      "enforcement": "hard"
+    },
+    {
+      "constraint_id": "layered_et_priority",
+      "type": "structural",
+      "description": "分层蒸散发必须遵循上层优先原则",
+      "rule": "upper_layer.et exhausted before lower_layer.et",
+      "enforcement": "hard"
+    },
+    {
+      "constraint_id": "storage_nonnegative",
+      "type": "physics",
+      "description": "储水量不能为负",
+      "rule": "storage >= 0",
+      "enforcement": "hard",
+      "check_code": "storage = max(storage, 0)"
+    },
+    {
+      "constraint_id": "output_matches_input_length",
+      "type": "structural",
+      "description": "输出数组长度必须与输入匹配",
+      "rule": "len(output) == len(input)",
+      "enforcement": "hard"
+    },
+    {
+      "constraint_id": "params_in_range",
+      "type": "structural",
+      "description": "参数必须在给定范围内",
+      "rule": "param_min <= param <= param_max",
+      "enforcement": "warning"
+    },
+    {
+      "constraint_id": "runoff_before_routing",
+      "type": "structural",
+      "description": "产流必须在汇流之前发生",
+      "rule": "runoff generation happens in time step t, routing in t+1 or later",
+      "enforcement": "hard"
+    }
+  ],
+  
+  "compatibility_rules": [
+    {
+      "from": "saturation_excess",
+      "to": "linear_reservoir",
+      "compatible": true,
+      "reason": "湿润区常用组合"
+    },
+    {
+      "from": "saturation_excess",
+      "to": "cascade",
+      "compatible": true,
+      "reason": "可模拟多水源响应"
+    },
+    {
+      "from": "infiltration_excess",
+      "to": "linear_reservoir",
+      "compatible": true,
+      "reason": "干旱区快速汇流"
+    },
+    {
+      "from": "infiltration_excess",
+      "to": "cascade",
+      "compatible": false,
+      "reason": "超渗产流通常直接汇流，不需要多级延迟"
+    },
+    {
+      "from": "soil_moisture_accounting",
+      "to": "linear_reservoir",
+      "compatible": true,
+      "reason": "HBV标准结构"
+    },
+    {
+      "from": "soil_moisture_accounting",
+      "to": "cascade",
+      "compatible": true,
+      "reason": "HBV-96结构"
+    },
+    {
+      "from": "layered_et",
+      "to": "saturation_excess",
+      "compatible": true,
+      "reason": "XAJ标准配置"
+    },
+    {
+      "from": "layered_et",
+      "to": "infiltration_excess",
+      "compatible": false,
+      "reason": "干旱区蒸散发简单，不需要分层"
+    },
+    {
+      "from": "soil_et",
+      "to": "soil_moisture_accounting",
+      "compatible": true,
+      "reason": "HBV配置"
+    }
+  ]
+}
