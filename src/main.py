@@ -28,6 +28,10 @@ from simulation.sceua import (
 )
 from templates.composer import get_composer, compose_model
 
+from kg.mechanism_registry import get_registry
+from kg.kg_rag import get_kg_rag
+from kg.reasoner import get_reasoner
+
 
 def compute_nse(obs, sim):
     """计算 Nash-Sutcliffe 效率系数"""
@@ -153,6 +157,10 @@ if "trigger_run" not in st.session_state:
     st.session_state["trigger_run"] = False
 if "review_history" not in st.session_state:
     st.session_state["review_history"] = []
+if "kg_result" not in st.session_state:
+    st.session_state["kg_result"] = None
+if "planning_mode" not in st.session_state:
+    st.session_state["planning_mode"] = "机制模式 (v1.3.5)"
 
 sidebar = st.sidebar
 
@@ -221,6 +229,20 @@ if basin_info:
 
 use_ml_correction = sidebar.checkbox("🤖 使用 XGBoost 误差校正", value=False)
 
+planning_mode = sidebar.radio(
+    "规划模式",
+    ["机制模式 (v1.3.5)", "模板模式 (v1.3.1 兼容)"],
+    index=0,
+    horizontal=True,
+    help="机制模式: 基于水文机制组合生成模型；模板模式: 基于预置模板选择模型"
+)
+
+if planning_mode != st.session_state.get("planning_mode", ""):
+    st.session_state["planning_mode"] = planning_mode
+    st.session_state["plan"] = None
+    st.session_state["generated_code"] = None
+    st.session_state["kg_result"] = None
+
 data = load_basin_data(selected_basin_id)
 
 left_col, right_col = st.columns([1, 1.2])
@@ -265,18 +287,43 @@ with left_col:
             context = kb.retrieve(rag_query, k=5)
             planner = Planner(api_key, selected_model, base_url)
             
-            planner_use_structured = selected_model in ["gpt-4o", "gpt-4o-mini"]
-            plan_obj = planner.plan(
-                str(basin_info), context, st.session_state.get("user_request", ""),
-                use_structured=planner_use_structured
-            )
+            planning_mode = st.session_state.get("planning_mode", "机制模式 (v1.3.5)")
             
-            if planner_use_structured and isinstance(plan_obj, ModelingPlan):
+            if "机制" in planning_mode:
+                kg_rag = get_kg_rag()
+                registry = get_registry()
+                reasoner = get_reasoner()
+                
+                basin_attrs = str(basin_info)
+                kg_result = kg_rag.retrieve_mechanisms(basin_attrs, user_request)
+                
+                best_runoff = kg_result["runoff_mechanisms"][0]["mechanism_id"] if kg_result["runoff_mechanisms"] else "soil_moisture_accounting"
+                best_routing = kg_result["routing_mechanisms"][0]["mechanism_id"] if kg_result["routing_mechanisms"] else "linear_reservoir"
+                
+                compatible, compat_reason = reasoner.check_compatibility(best_runoff, best_routing)
+                if not compatible:
+                    progress.write(f"⚠️ 兼容性检查: {compat_reason}")
+                
+                plan_obj = planner.plan_blueprint(
+                    basin_attrs, context, user_request,
+                    use_structured=False
+                )
                 st.session_state["plan"] = plan_obj
-                progress.write(f"✅ 方案生成完成 (结构化: {plan_obj.runoff_module_id} + {plan_obj.routing_module_id})")
+                st.session_state["kg_result"] = kg_result
+                progress.write(f"✅ 机制方案生成完成: {best_runoff} + {best_routing}")
             else:
-                st.session_state["plan"] = plan_obj
-                progress.write("✅ 方案生成完成")
+                planner_use_structured = selected_model in ["gpt-4o", "gpt-4o-mini"]
+                plan_obj = planner.plan(
+                    str(basin_info), context, st.session_state.get("user_request", ""),
+                    use_structured=planner_use_structured
+                )
+                
+                if planner_use_structured and isinstance(plan_obj, ModelingPlan):
+                    st.session_state["plan"] = plan_obj
+                    progress.write(f"✅ 方案生成完成 (结构化: {plan_obj.runoff_module_id} + {plan_obj.routing_module_id})")
+                else:
+                    st.session_state["plan"] = plan_obj
+                    progress.write("✅ 方案生成完成")
         else:
             plan_obj = st.session_state["plan"]
             progress.write("📋 使用已缓存的建模方案")
@@ -651,6 +698,15 @@ with left_col:
     if st.session_state.get("plan"):
         with st.expander("📋 Planner 建模方案", expanded=False):
             st.markdown(st.session_state["plan"])
+            
+            if st.session_state.get("kg_result"):
+                kg_info = st.session_state["kg_result"]
+                st.markdown("---")
+                st.markdown("**🧩 机制组合分析**")
+                st.markdown(f"**产流机制**: {kg_info['runoff_mechanisms'][0]['name']} (`{kg_info['runoff_mechanisms'][0]['mechanism_id']}`)")
+                st.markdown(f"**汇流机制**: {kg_info['routing_mechanisms'][0]['name']} (`{kg_info['routing_mechanisms'][0]['mechanism_id']}`)")
+                st.markdown(f"**结构模式**: {', '.join(kg_info['patterns'])}")
+                st.markdown(f"**选择依据**: {kg_info['reasoning']}")
 
     if st.session_state.get("generated_code"):
         with st.expander("💻 Executer 生成的代码", expanded=False):
